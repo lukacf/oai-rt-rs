@@ -10,7 +10,52 @@ A Rust client for the [OpenAI Realtime API](https://platform.openai.com/docs/gui
 - Async interface using `tokio` and `tokio-tungstenite`.
 - Client-side validation for GA constraints (PCM 24kHz, output modalities, 15MB audio chunks).
 
-## Usage
+## Quickstart (SDK)
+
+```rust
+use oai_rt_rs::{Realtime, ToolRegistry};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct EchoArgs {
+    text: String,
+}
+
+#[derive(Debug, Serialize)]
+struct EchoResp {
+    echoed: String,
+}
+
+#[tokio::main]
+async fn main() -> oai_rt_rs::Result<()> {
+    let mut tools = ToolRegistry::new();
+    tools.tool_with_description("echo", "Echo back the input.", |args: EchoArgs| async move {
+        Ok(EchoResp { echoed: args.text })
+    });
+
+    let mut session = Realtime::builder()
+        .api_key("your-api-key")
+        .model("gpt-realtime")
+        .instructions("Be helpful.")
+        .output_audio()
+        .tools(tools)
+        .on_text(|text| async move {
+            println!("assistant: {text}");
+            Ok(())
+        })
+        .connect_ws()
+        .await?;
+
+    session.say("Hello!").await?;
+    while let Some(text) = session.next_text().await? {
+        println!("received: {text}");
+    }
+    Ok(())
+}
+```
+
+## Low-level protocol (full control)
 
 ```rust
 use oai_rt_rs::RealtimeClient;
@@ -21,7 +66,6 @@ use oai_rt_rs::protocol::models::{SessionUpdate, SessionUpdateConfig, OutputModa
 async fn main() -> oai_rt_rs::Result<()> {
     let mut client = RealtimeClient::connect("your-api-key", None, None).await?;
 
-    // Update session (GA-safe: model/voice excluded)
     let session = SessionUpdate {
         config: SessionUpdateConfig {
             output_modalities: Some(OutputModalities::Audio),
@@ -29,9 +73,10 @@ async fn main() -> oai_rt_rs::Result<()> {
             ..SessionUpdateConfig::default()
         },
     };
-    client.send(ClientEvent::SessionUpdate { event_id: None, session: Box::new(session) }).await?;
+    client
+        .send(ClientEvent::SessionUpdate { event_id: None, session: Box::new(session) })
+        .await?;
 
-    // Stream events
     while let Some(event) = client.next_event().await? {
         println!("Received event: {:?}", event);
     }
@@ -65,7 +110,7 @@ if let Some(call_id) = resp.call_id.as_deref() {
 # }
 ```
 
-## GA constraints
+## GA constraints (no beta)
 
 - `output_modalities` must be exactly one of `audio` or `text`.
 - `audio/pcm` rate is fixed at 24 kHz.

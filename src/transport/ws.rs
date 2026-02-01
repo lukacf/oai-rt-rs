@@ -64,13 +64,6 @@ impl futures::Sink<tokio_tungstenite::tungstenite::Message> for WsStream {
 
 const WS_BASE_URL: &str = "wss://api.openai.com/v1/realtime";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ProtocolVersion {
-    #[default]
-    Ga,
-    BetaV1,
-}
-
 /// Establish a WebSocket connection to the Realtime API.
 ///
 /// # Errors
@@ -79,19 +72,6 @@ pub async fn connect(
     api_key: &str,
     model: Option<&str>,
     call_id: Option<&str>,
-) -> Result<WsStream> {
-    connect_with_config(api_key, model, call_id, ProtocolVersion::Ga).await
-}
-
-/// Establish a WebSocket connection with extended configuration.
-///
-/// # Errors
-/// Returns an error if the handshake fails.
-pub async fn connect_with_config(
-    api_key: &str,
-    model: Option<&str>,
-    call_id: Option<&str>,
-    version: ProtocolVersion,
 ) -> Result<WsStream> {
     let mut url = Url::parse(WS_BASE_URL)?;
     
@@ -111,10 +91,6 @@ pub async fn connect_with_config(
     )?;
     let h = req.headers_mut();
     h.insert(reqwest::header::AUTHORIZATION, auth_header);
-    if version == ProtocolVersion::BetaV1 {
-        h.insert("OpenAI-Beta", HeaderValue::from_static("realtime=v1"));
-    }
-
     let (ws_stream, _) = connect_async(req).await?;
 
     tracing::info!("Connected to OpenAI Realtime");

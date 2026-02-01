@@ -1,7 +1,6 @@
 use crate::protocol::client_events::ClientEvent;
-use crate::protocol::models::{ContentPart, Item, SessionConfig, SessionUpdate};
+use crate::protocol::models::{ContentPart, Item, SessionConfig, SessionUpdate, SessionUpdateConfig};
 use crate::protocol::server_events::ServerEvent;
-use crate::transport::ws::ProtocolVersion;
 use crate::{Error, Result};
 
 use super::handlers::EventHandlers;
@@ -218,7 +217,6 @@ pub(super) struct SessionConfigSnapshot {
     pub session: SessionConfig,
     pub handlers: EventHandlers,
     pub tools: ToolRegistry,
-    pub protocol: ProtocolVersion,
 }
 
 impl SessionConfigSnapshot {
@@ -227,16 +225,36 @@ impl SessionConfigSnapshot {
     /// # Errors
     /// Returns an error if the connection fails.
     pub async fn connect_ws(self) -> Result<Session> {
-        let client = crate::RealtimeClient::connect_with_version(
-            &self.api_key,
-            self.model.as_deref(),
-            None,
-            self.protocol,
-        )
-        .await?;
+        let client = crate::RealtimeClient::connect(&self.api_key, self.model.as_deref(), None).await?;
 
         let transport = Box::new(WsTransport { client });
-        Ok(Session::from_transport(transport, self.handlers, self.tools))
+        let session = Session::from_transport(transport, self.handlers, self.tools);
+        let update = session_update_from_config(&self.session);
+        session.update_session(update).await?;
+        Ok(session)
+    }
+}
+
+fn session_update_from_config(config: &SessionConfig) -> SessionUpdate {
+    SessionUpdate {
+        config: SessionUpdateConfig {
+            output_modalities: Some(config.output_modalities),
+            modalities: config.modalities.clone(),
+            include: config.include.clone(),
+            prompt: config.prompt.clone(),
+            truncation: config.truncation.clone(),
+            instructions: config.instructions.clone(),
+            input_audio_format: config.input_audio_format.clone(),
+            output_audio_format: config.output_audio_format.clone(),
+            input_audio_transcription: config.input_audio_transcription.clone(),
+            turn_detection: config.turn_detection.clone(),
+            tools: config.tools.clone(),
+            tool_choice: config.tool_choice.clone(),
+            temperature: config.temperature,
+            max_output_tokens: config.max_output_tokens.clone(),
+            audio: config.audio.clone(),
+            tracing: config.tracing.clone(),
+        },
     }
 }
 

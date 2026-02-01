@@ -1,4 +1,5 @@
 use crate::Result;
+use crate::protocol::models::{McpToolConfig, Tool};
 use schemars::schema::RootSchema;
 use std::sync::Arc;
 use schemars::JsonSchema;
@@ -37,6 +38,7 @@ pub struct ToolResult {
 pub struct ToolRegistry {
     defs: Vec<ToolDefinition>,
     handlers: HashMap<String, ToolHandler>,
+    mcp: Vec<McpToolConfig>,
 }
 
 impl ToolRegistry {
@@ -50,7 +52,44 @@ impl ToolRegistry {
         &self.defs
     }
 
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.defs.is_empty() && self.mcp.is_empty()
+    }
+
     pub fn tool<TArgs, TResp, F, Fut>(&mut self, name: &str, handler: F)
+    where
+        TArgs: DeserializeOwned + JsonSchema + Send + 'static,
+        TResp: Serialize + Send + 'static,
+        F: Fn(TArgs) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<TResp>> + Send + 'static,
+    {
+        let schema = schemars::schema_for!(TArgs);
+        let name = name.to_string();
+        let entry = ToolDefinition { name: name.clone(), description: None, schema };
+        self.defs.push(entry);
+
+        let user_handler = Arc::new(handler);
+        let handler = move |value: Value| -> BoxFuture<Result<Value>> {
+            let user_handler = Arc::clone(&user_handler);
+            Box::pin(async move {
+                let args: TArgs = serde_json::from_value(value)
+                    .map_err(|e| crate::Error::InvalidClientEvent(e.to_string()))?;
+                let resp = user_handler(args).await?;
+                serde_json::to_value(resp)
+                    .map_err(|e| crate::Error::InvalidClientEvent(e.to_string()))
+            })
+        };
+
+        self.handlers.insert(name, Box::new(handler));
+    }
+
+    pub fn tool_with_description<TArgs, TResp, F, Fut>(
+        &mut self,
+        name: &str,
+        description: impl Into<String>,
+        handler: F,
+    )
     where
         TArgs: DeserializeOwned + JsonSchema + Send + 'static,
         TResp: Serialize + Send + 'static,
@@ -61,7 +100,7 @@ impl ToolRegistry {
         let name = name.to_string();
         let entry = ToolDefinition {
             name: name.clone(),
-            description: None,
+            description: Some(description.into()),
             schema,
         };
         self.defs.push(entry);
@@ -79,6 +118,41 @@ impl ToolRegistry {
         };
 
         self.handlers.insert(name, Box::new(handler));
+    }
+
+    /// Register an MCP tool configuration for the session.
+    ///
+    /// # Errors
+    /// Returns an error if the MCP config is invalid.
+    // Keep a single public error type for the SDK surface.
+    #[allow(clippy::result_large_err)]
+    pub fn mcp_tool(&mut self, config: McpToolConfig) -> Result<()> {
+        config.validate()?;
+        self.mcp.push(config);
+        Ok(())
+    }
+
+    /// Convert all registered tools into protocol-level tool definitions.
+    ///
+    /// # Errors
+    /// Returns an error if schema serialization fails.
+    // Keep a single public error type for the SDK surface.
+    #[allow(clippy::result_large_err)]
+    pub fn try_as_tools(&self) -> Result<Vec<Tool>> {
+        let mut tools = Vec::with_capacity(self.defs.len() + self.mcp.len());
+        for def in &self.defs {
+            let parameters = serde_json::to_value(&def.schema)
+                .map_err(|e| crate::Error::InvalidClientEvent(e.to_string()))?;
+            tools.push(Tool::Function {
+                name: def.name.clone(),
+                description: def.description.clone(),
+                parameters,
+            });
+        }
+        for mcp in &self.mcp {
+            tools.push(Tool::Mcp(mcp.clone()));
+        }
+        Ok(tools)
     }
 
     /// Dispatch a tool call to the registered handler.

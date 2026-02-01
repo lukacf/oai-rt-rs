@@ -7,7 +7,7 @@ pub mod tools;
 pub mod usage;
 
 pub use audio::{
-    AudioConfig, AudioFormat, BetaAudioFormat, InputAudioConfig, InputAudioTranscription,
+    AudioConfig, AudioFormat, InputAudioConfig, InputAudioTranscription,
     NoiseReduction, NoiseReductionType, OutputAudioConfig, TurnDetection,
 };
 pub use common::{

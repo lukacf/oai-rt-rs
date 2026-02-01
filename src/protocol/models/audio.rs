@@ -3,16 +3,6 @@ use serde::{Deserialize, Serialize};
 use super::{Eagerness, Nullable, Voice};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(transparent)]
-pub struct BetaAudioFormat(pub String);
-
-impl std::fmt::Display for BetaAudioFormat {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AudioFormat {
     #[serde(rename = "audio/pcm")]

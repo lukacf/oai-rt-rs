@@ -13,7 +13,7 @@ pub use protocol::client_events::ClientEvent;
 pub use protocol::server_events::ServerEvent;
 pub use protocol::models::{
     ApprovalFilter, ApprovalMode, AudioConfig, AudioFormat, CachedTokenDetails, ContentPart,
-    BetaAudioFormat, ConversationMode, Eagerness, Infinite, InputAudioConfig, InputAudioTranscription,
+    ConversationMode, Eagerness, Infinite, InputAudioConfig, InputAudioTranscription,
     InputItem, InputTokenDetails, Item, ItemStatus, MaxTokens, McpError, McpToolConfig, McpToolInfo,
     Modality, NoiseReduction, NoiseReductionType, OutputAudioConfig, OutputModalities, OutputTokenDetails,
     PromptRef, RequireApproval, Response, ResponseConfig, ResponseStatus, RetentionRatioTruncation,
@@ -21,7 +21,6 @@ pub use protocol::models::{
     Tool, ToolChoice, ToolChoiceMode, Tracing, TracingAuto, TracingConfig, Truncation, TruncationStrategy,
     TruncationType, Usage, Voice,
 };
-pub use transport::ws::ProtocolVersion;
 
 use futures::stream::BoxStream;
 use futures::{SinkExt, StreamExt};
@@ -53,19 +52,6 @@ impl RealtimeClient {
         Ok(Self { stream })
     }
 
-    /// Connect to the `OpenAI` Realtime API with specific protocol version.
-    ///
-    /// # Errors
-    /// Returns an error if the connection fails.
-    pub async fn connect_with_version(
-        api_key: &str, 
-        model: Option<&str>, 
-        call_id: Option<&str>, 
-        version: ProtocolVersion
-    ) -> Result<Self> {
-        let stream = transport::ws::connect_with_config(api_key, model, call_id, version).await?;
-        Ok(Self { stream })
-    }
 
     /// Send a client event to the server.
     ///

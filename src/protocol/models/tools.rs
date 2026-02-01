@@ -9,7 +9,8 @@ pub enum Tool {
     #[serde(rename = "function")]
     Function {
         name: String,
-        description: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
         /// JSON Schema for tool parameters (intentionally untyped).
         parameters: JsonSchema,
     },
