@@ -60,6 +60,9 @@ pub enum Error {
 
     #[error("Invalid client event: {0}")]
     InvalidClientEvent(String),
+
+    #[error("Not implemented: {0}")]
+    NotImplemented(&'static str),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

@@ -5,8 +5,10 @@
 pub mod protocol;
 pub mod transport;
 pub mod error;
+pub mod sdk;
 
 pub use error::{Error, Result};
+pub use sdk::{Realtime, RealtimeBuilder, Session as RealtimeSession, SessionHandle, ToolRegistry, ToolCall, ToolResult};
 pub use protocol::client_events::ClientEvent;
 pub use protocol::server_events::ServerEvent;
 pub use protocol::models::{
