@@ -8,7 +8,10 @@ pub mod error;
 pub mod sdk;
 
 pub use error::{Error, Result};
-pub use sdk::{Realtime, RealtimeBuilder, Session as RealtimeSession, SessionHandle, ToolRegistry, ToolCall, ToolResult};
+pub use sdk::{
+    Calls, EventStream, Realtime, RealtimeBuilder, ResponseBuilder, SdkEvent,
+    Session as RealtimeSession, SessionHandle, ToolCall, ToolRegistry, ToolResult, ToolSpec, ToolFuture,
+};
 pub use protocol::client_events::ClientEvent;
 pub use protocol::server_events::ServerEvent;
 pub use protocol::models::{

@@ -1,9 +1,13 @@
 use crate::protocol::client_events::ClientEvent;
-use crate::protocol::models::{ContentPart, Item, SessionConfig, SessionUpdate, SessionUpdateConfig};
+use crate::protocol::models::{
+    ContentPart, Item, ItemStatus, ResponseConfig, SessionConfig, SessionUpdate, SessionUpdateConfig,
+};
 use crate::protocol::server_events::ServerEvent;
 use crate::{Error, Result};
 
+use super::events::{EventStream, SdkEvent};
 use super::handlers::EventHandlers;
+use super::response::ResponseBuilder;
 use super::tools::{ToolCall, ToolRegistry, ToolResult};
 use super::transport::Transport;
 use std::collections::HashMap;
@@ -17,6 +21,7 @@ pub struct SessionHandle {
 pub struct Session {
     sender: mpsc::Sender<Command>,
     text_rx: mpsc::Receiver<String>,
+    event_rx: mpsc::Receiver<SdkEvent>,
 }
 
 impl Session {
@@ -56,6 +61,20 @@ impl Session {
         Ok(self.text_rx.recv().await)
     }
 
+    /// Await the next SDK event.
+    ///
+    /// # Errors
+    /// Returns an error if the SDK is not fully initialized or the stream fails.
+    pub async fn next_event(&mut self) -> Result<Option<SdkEvent>> {
+        Ok(self.event_rx.recv().await)
+    }
+
+    /// Stream SDK events.
+    #[must_use]
+    pub fn events(&mut self) -> EventStream<'_> {
+        EventStream::new(&mut self.event_rx)
+    }
+
     /// Send a raw protocol event.
     ///
     /// # Errors
@@ -89,6 +108,84 @@ impl Session {
         self.send_event(event).await
     }
 
+    /// Create a response builder.
+    #[must_use]
+    pub fn response(&self) -> ResponseBuilder {
+        ResponseBuilder::new()
+    }
+
+    /// Send a response.create event with the provided config.
+    ///
+    /// # Errors
+    /// Returns an error if the SDK is not fully initialized or the send fails.
+    pub async fn send_response(&self, config: ResponseConfig) -> Result<()> {
+        let event = ClientEvent::ResponseCreate {
+            event_id: None,
+            response: Some(Box::new(config)),
+        };
+        self.send_event(event).await
+    }
+
+    /// Request a response using server defaults.
+    ///
+    /// # Errors
+    /// Returns an error if the SDK is not fully initialized or the send fails.
+    pub async fn respond(&self) -> Result<()> {
+        let event = ClientEvent::ResponseCreate {
+            event_id: None,
+            response: None,
+        };
+        self.send_event(event).await
+    }
+
+    /// Send a user message and await the next completed text response.
+    ///
+    /// # Errors
+    /// Returns an error if the SDK is not fully initialized or the stream fails.
+    pub async fn ask(&mut self, text: &str) -> Result<Option<String>> {
+        self.say(text).await?;
+        self.respond().await?;
+        self.next_text().await
+    }
+
+    /// Approve an MCP tool request.
+    ///
+    /// # Errors
+    /// Returns an error if the SDK is not fully initialized or the send fails.
+    pub async fn approve_mcp(&self, approval_request_id: &str, reason: Option<&str>) -> Result<()> {
+        self.mcp_approval(approval_request_id, true, reason).await
+    }
+
+    /// Deny an MCP tool request.
+    ///
+    /// # Errors
+    /// Returns an error if the SDK is not fully initialized or the send fails.
+    pub async fn deny_mcp(&self, approval_request_id: &str, reason: Option<&str>) -> Result<()> {
+        self.mcp_approval(approval_request_id, false, reason).await
+    }
+
+    async fn mcp_approval(
+        &self,
+        approval_request_id: &str,
+        approve: bool,
+        reason: Option<&str>,
+    ) -> Result<()> {
+        let item = Item::McpApprovalResponse {
+            id: None,
+            status: Some(ItemStatus::Completed),
+            approval_request_id: approval_request_id.to_string(),
+            approve,
+            reason: reason.map(str::to_string),
+        };
+
+        let event = ClientEvent::ConversationItemCreate {
+            event_id: None,
+            previous_item_id: None,
+            item: Box::new(item),
+        };
+        self.send_event(event).await
+    }
+
     async fn send_event(&self, event: ClientEvent) -> Result<()> {
         let (tx, rx) = oneshot::channel();
         self.sender
@@ -106,6 +203,7 @@ impl Session {
     ) -> Self {
         let (cmd_tx, mut cmd_rx) = mpsc::channel::<Command>(64);
         let (text_tx, text_rx) = mpsc::channel::<String>(64);
+        let (event_tx, event_rx) = mpsc::channel::<SdkEvent>(128);
 
         tokio::spawn(async move {
             let mut buffers: HashMap<(String, u32), String> = HashMap::new();
@@ -127,6 +225,9 @@ impl Session {
                     event = transport.next_event() => {
                         match event {
                             Ok(Some(evt)) => {
+                                if let Some(mapped) = SdkEvent::from_server(evt.clone()) {
+                                    let _ = event_tx.send(mapped).await;
+                                }
                                 if let Some(handler) = &handlers.on_raw_event {
                                     let _ = handler(evt.clone()).await;
                                 }
@@ -145,10 +246,17 @@ impl Session {
                                             let _ = handler(text).await;
                                         }
                                     }
-                                    ServerEvent::ResponseFunctionCallArgumentsDone { call_id, name, arguments, .. } => {
+                                    ServerEvent::ResponseFunctionCallArgumentsDone { response_id, item_id, output_index, call_id, name, arguments, .. } => {
                                         let arguments = serde_json::from_str(&arguments)
                                             .unwrap_or(serde_json::Value::String(arguments));
-                                        let call = ToolCall { name, call_id: call_id.clone(), arguments };
+                                        let call = ToolCall {
+                                            name,
+                                            call_id: call_id.clone(),
+                                            arguments,
+                                            response_id: Some(response_id),
+                                            item_id: Some(item_id),
+                                            output_index: Some(output_index),
+                                        };
 
                                         let result = if let Some(handler) = &handlers.on_tool_call {
                                             handler(call).await
@@ -185,6 +293,7 @@ impl Session {
         Self {
             sender: cmd_tx,
             text_rx,
+            event_rx,
         }
     }
 }
@@ -276,6 +385,7 @@ impl Transport for WsTransport {
 mod tests {
     use super::*;
     use crate::protocol::server_events::ServerEvent;
+    use futures::StreamExt;
     use tokio::sync::mpsc;
 
     struct MockTransport {
@@ -337,5 +447,156 @@ mod tests {
         }
 
         drop(session);
+    }
+
+    #[tokio::test]
+    async fn next_event_maps_sdk_event() {
+        let (event_tx, event_rx) = mpsc::channel(8);
+        let (out_tx, _out_rx) = mpsc::channel(8);
+        let transport = Box::new(MockTransport { incoming: event_rx, outgoing: out_tx });
+
+        let tools = ToolRegistry::new();
+        let mut session = Session::from_transport(transport, EventHandlers::new(), tools);
+
+        let evt = ServerEvent::ResponseOutputTextDelta {
+            event_id: "evt_1".to_string(),
+            response_id: "resp_1".to_string(),
+            item_id: "item_1".to_string(),
+            output_index: 0,
+            content_index: 0,
+            delta: "hello".to_string(),
+        };
+        event_tx.send(evt).await.unwrap();
+
+        let mapped = session.next_event().await.unwrap().expect("sdk event");
+        match mapped {
+            SdkEvent::TextDelta { delta, .. } => assert_eq!(delta, "hello"),
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn event_stream_yields_sdk_event() {
+        let (event_tx, event_rx) = mpsc::channel(8);
+        let (out_tx, _out_rx) = mpsc::channel(8);
+        let transport = Box::new(MockTransport { incoming: event_rx, outgoing: out_tx });
+
+        let tools = ToolRegistry::new();
+        let mut session = Session::from_transport(transport, EventHandlers::new(), tools);
+
+        let evt = ServerEvent::ResponseOutputTextDone {
+            event_id: "evt_1".to_string(),
+            response_id: "resp_1".to_string(),
+            item_id: "item_1".to_string(),
+            output_index: 0,
+            content_index: 0,
+            text: "done".to_string(),
+        };
+        event_tx.send(evt).await.unwrap();
+
+        let mut stream = session.events();
+        let mapped = stream.next().await.expect("sdk event");
+        match mapped {
+            SdkEvent::TextDone { text, .. } => assert_eq!(text, "done"),
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn send_response_emits_response_create() {
+        let (event_tx, event_rx) = mpsc::channel(8);
+        let (out_tx, mut out_rx) = mpsc::channel(8);
+        let transport = Box::new(MockTransport { incoming: event_rx, outgoing: out_tx });
+
+        let tools = ToolRegistry::new();
+        let session = Session::from_transport(transport, EventHandlers::new(), tools);
+
+        let config = crate::protocol::models::ResponseConfig {
+            instructions: Some("Respond.".to_string()),
+            ..Default::default()
+        };
+
+        session.send_response(config).await.unwrap();
+
+        let sent = tokio::time::timeout(std::time::Duration::from_secs(1), out_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        match sent {
+            ClientEvent::ResponseCreate { response, .. } => {
+                let response = response.expect("response config");
+                assert_eq!(response.instructions.as_deref(), Some("Respond."));
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+
+        drop(event_tx);
+    }
+
+    #[tokio::test]
+    async fn approve_mcp_sends_item() {
+        let (event_tx, event_rx) = mpsc::channel(8);
+        let (out_tx, mut out_rx) = mpsc::channel(8);
+        let transport = Box::new(MockTransport { incoming: event_rx, outgoing: out_tx });
+
+        let tools = ToolRegistry::new();
+        let session = Session::from_transport(transport, EventHandlers::new(), tools);
+
+        session.approve_mcp("req_1", Some("ok")).await.unwrap();
+
+        let sent = tokio::time::timeout(std::time::Duration::from_secs(1), out_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        match sent {
+            ClientEvent::ConversationItemCreate { item, .. } => match *item {
+                Item::McpApprovalResponse { approval_request_id, approve, reason, .. } => {
+                    assert_eq!(approval_request_id, "req_1");
+                    assert!(approve);
+                    assert_eq!(reason.as_deref(), Some("ok"));
+                }
+                other => panic!("unexpected item: {other:?}"),
+            },
+            other => panic!("unexpected event: {other:?}"),
+        }
+
+        drop(event_tx);
+    }
+
+    #[tokio::test]
+    async fn ask_sends_and_returns_text() {
+        let (event_tx, event_rx) = mpsc::channel(8);
+        let (out_tx, mut out_rx) = mpsc::channel(8);
+        let transport = Box::new(MockTransport { incoming: event_rx, outgoing: out_tx });
+
+        let tools = ToolRegistry::new();
+        let mut session = Session::from_transport(transport, EventHandlers::new(), tools);
+
+        let event_tx_clone = event_tx.clone();
+        let send_evt = async move {
+            let evt = ServerEvent::ResponseOutputTextDone {
+                event_id: "evt_1".to_string(),
+                response_id: "resp_1".to_string(),
+                item_id: "item_1".to_string(),
+                output_index: 0,
+                content_index: 0,
+                text: "hello".to_string(),
+            };
+            event_tx_clone.send(evt).await.unwrap();
+        };
+        tokio::spawn(send_evt);
+
+        let text = session.ask("hi").await.unwrap().expect("text");
+        assert_eq!(text, "hello");
+
+        // Ensure we sent both the item and the response.create.
+        let first = out_rx.recv().await.unwrap();
+        let second = out_rx.recv().await.unwrap();
+        assert!(matches!(first, ClientEvent::ConversationItemCreate { .. }) || matches!(second, ClientEvent::ConversationItemCreate { .. }));
+        assert!(matches!(first, ClientEvent::ResponseCreate { .. }) || matches!(second, ClientEvent::ResponseCreate { .. }));
+
+        drop(event_tx);
     }
 }

@@ -47,12 +47,58 @@ async fn main() -> oai_rt_rs::Result<()> {
         .connect_ws()
         .await?;
 
-    session.say("Hello!").await?;
-    while let Some(text) = session.next_text().await? {
-        println!("received: {text}");
-    }
+    let reply = session.ask("Hello!").await?;
+    println!("received: {:?}", reply);
     Ok(())
 }
+```
+
+## Response builder (high-level)
+
+```rust
+use oai_rt_rs::ResponseBuilder;
+
+# async fn demo(session: &oai_rt_rs::RealtimeSession) -> oai_rt_rs::Result<()> {
+ResponseBuilder::new()
+    .output_text()
+    .instructions("Be concise.")
+    .input_text("Summarize this.")
+    .send(session)
+    .await?;
+# Ok(())
+# }
+```
+
+## Typed tools (macro)
+
+```rust
+use oai_rt_rs::{realtime_tool, ToolRegistry};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SumArgs {
+    pub a: i32,
+    pub b: i32,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SumResp {
+    pub sum: i32,
+}
+
+realtime_tool!(SumTool: SumArgs => SumResp {
+    name: "sum",
+    description: "Add two integers.",
+    |args: SumArgs| async move {
+        Ok(SumResp { sum: args.a + args.b })
+    }
+});
+
+# fn demo() {
+let mut registry = ToolRegistry::new();
+registry.register(SumTool);
+# }
 ```
 
 ## Low-level protocol (full control)
@@ -87,11 +133,11 @@ async fn main() -> oai_rt_rs::Result<()> {
 ## REST helpers (WebRTC/SIP)
 
 ```rust
-use oai_rt_rs::transport::rest::RealtimeRestAdapter;
+use oai_rt_rs::{Calls};
 use oai_rt_rs::protocol::models::{SessionConfig, SessionKind, OutputModalities};
 
 # async fn demo() -> oai_rt_rs::Result<()> {
-let rest = RealtimeRestAdapter::new("your-api-key")?;
+let rest = Calls::new("your-api-key")?;
 let session = SessionConfig::new(
     SessionKind::Realtime,
     "gpt-realtime",
@@ -99,7 +145,7 @@ let session = SessionConfig::new(
 );
 
 // WebRTC (raw SDP) + call_id capture
-let resp = rest.post_sdp_offer_raw_with_call_id("v=0...".to_string()).await?;
+let resp = rest.webrtc_offer_raw_with_call_id("v=0...".to_string()).await?;
 println!("call_id: {:?}", resp.call_id);
 
 // Hang up

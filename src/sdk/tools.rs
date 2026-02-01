@@ -26,6 +26,9 @@ pub struct ToolCall {
     pub name: String,
     pub call_id: String,
     pub arguments: Value,
+    pub response_id: Option<String>,
+    pub item_id: Option<String>,
+    pub output_index: Option<u32>,
 }
 
 #[derive(Clone, Debug)]
@@ -120,6 +123,30 @@ impl ToolRegistry {
         self.handlers.insert(name, Box::new(handler));
     }
 
+    pub fn register<T: ToolSpec>(&mut self, tool: T) {
+        let schema = schemars::schema_for!(T::Args);
+        let entry = ToolDefinition {
+            name: T::NAME.to_string(),
+            description: T::DESCRIPTION.map(ToString::to_string),
+            schema,
+        };
+        self.defs.push(entry);
+
+        let tool = Arc::new(tool);
+        let handler = move |value: Value| -> BoxFuture<Result<Value>> {
+            let tool = Arc::clone(&tool);
+            Box::pin(async move {
+                let args: T::Args = serde_json::from_value(value)
+                    .map_err(|e| crate::Error::InvalidClientEvent(e.to_string()))?;
+                let resp = tool.call(args).await?;
+                serde_json::to_value(resp)
+                    .map_err(|e| crate::Error::InvalidClientEvent(e.to_string()))
+            })
+        };
+
+        self.handlers.insert(T::NAME.to_string(), Box::new(handler));
+    }
+
     /// Register an MCP tool configuration for the session.
     ///
     /// # Errors
@@ -166,4 +193,42 @@ impl ToolRegistry {
         let output = handler(call.arguments).await?;
         Ok(ToolResult { call_id: call.call_id, output })
     }
+}
+
+pub trait ToolSpec: Send + Sync + 'static {
+    type Args: DeserializeOwned + JsonSchema + Send + 'static;
+    type Output: Serialize + Send + 'static;
+    const NAME: &'static str;
+    const DESCRIPTION: Option<&'static str>;
+
+    fn call(&self, args: Self::Args) -> BoxFuture<Result<Self::Output>>;
+}
+
+#[macro_export]
+macro_rules! realtime_tool {
+    (
+        $(#[$meta:meta])*
+        $name:ident :
+        $args:ty => $resp:ty
+        {
+            name: $tool_name:expr,
+            description: $desc:expr,
+            $body:expr
+        }
+    ) => {
+        $(#[$meta])*
+        pub struct $name;
+
+        impl $crate::ToolSpec for $name {
+            type Args = $args;
+            type Output = $resp;
+            const NAME: &'static str = $tool_name;
+            const DESCRIPTION: Option<&'static str> = Some($desc);
+
+            fn call(&self, args: Self::Args) -> $crate::ToolFuture<$crate::Result<Self::Output>> {
+                let fut = $body;
+                Box::pin(fut(args))
+            }
+        }
+    };
 }

@@ -1,4 +1,5 @@
 use oai_rt_rs::sdk::{Realtime, ToolRegistry};
+use oai_rt_rs::realtime_tool;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -11,6 +12,25 @@ struct EchoArgs {
 struct EchoResp {
     echoed: String,
 }
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SumArgs {
+    a: i32,
+    b: i32,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SumResp {
+    sum: i32,
+}
+
+realtime_tool!(SumTool: SumArgs => SumResp {
+    name: "sum",
+    description: "Add two integers.",
+    |args: SumArgs| async move {
+        Ok(SumResp { sum: args.a + args.b })
+    }
+});
 
 #[test]
 fn builder_chain_compiles() {
@@ -30,4 +50,12 @@ fn tool_registry_collects_definitions() {
 
     assert_eq!(registry.definitions().len(), 1);
     assert_eq!(registry.definitions()[0].name, "echo");
+}
+
+#[test]
+fn tool_registry_registers_tool_spec() {
+    let mut registry = ToolRegistry::new();
+    registry.register(SumTool);
+    assert_eq!(registry.definitions().len(), 1);
+    assert_eq!(registry.definitions()[0].name, "sum");
 }
