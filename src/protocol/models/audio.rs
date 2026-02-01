@@ -81,12 +81,13 @@ pub struct NoiseReduction {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum NoiseReductionType {
-    Default,
+    NearField,
+    FarField,
 }
 
 impl Default for NoiseReductionType {
     fn default() -> Self {
-        Self::Default
+        Self::NearField
     }
 }
 

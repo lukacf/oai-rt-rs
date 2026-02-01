@@ -357,7 +357,7 @@ enum ServerEventRepr {
         event_id: String,
         response_id: String,
     },
-    #[serde(rename = "input_audio_transcription.delta")]
+    #[serde(rename = "conversation.item.input_audio_transcription.delta")]
     InputAudioTranscriptionDelta {
         event_id: String,
         item_id: String,
@@ -366,7 +366,7 @@ enum ServerEventRepr {
         obfuscation: Option<Value>,
         logprobs: Option<Value>,
     },
-    #[serde(rename = "input_audio_transcription.segment")]
+    #[serde(rename = "conversation.item.input_audio_transcription.segment")]
     InputAudioTranscriptionSegment {
         event_id: String,
         item_id: String,
@@ -377,14 +377,14 @@ enum ServerEventRepr {
         start: Option<f64>,
         end: Option<f64>,
     },
-    #[serde(rename = "input_audio_transcription.failed")]
+    #[serde(rename = "conversation.item.input_audio_transcription.failed")]
     InputAudioTranscriptionFailed {
         event_id: String,
         item_id: String,
         content_index: u32,
         error: ServerError,
     },
-    #[serde(rename = "input_audio_transcription.completed")]
+    #[serde(rename = "conversation.item.input_audio_transcription.completed")]
     InputAudioTranscriptionCompleted {
         event_id: String,
         item_id: String,
