@@ -1,6 +1,6 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
-use super::models::{ArbitraryJson, ContentPart, Item, Response, Session};
+use super::models::{ArbitraryJson, ContentPart, Item, Response, Session, Usage};
 use crate::error::ServerError;
 
 #[derive(Debug, Clone)]
@@ -16,6 +16,11 @@ pub enum ServerEvent {
     SessionUpdated {
         event_id: String,
         session: Session,
+    },
+    ConversationItemCreated {
+        event_id: String,
+        previous_item_id: Option<String>,
+        item: Item,
     },
     ConversationItemAdded {
         event_id: String,
@@ -110,6 +115,8 @@ pub enum ServerEvent {
         item_id: String,
         content_index: u32,
         transcript: String,
+        logprobs: Option<Value>,
+        usage: Option<Usage>,
     },
     McpListToolsInProgress {
         event_id: String,
@@ -222,6 +229,7 @@ pub enum ServerEvent {
         item_id: String,
         output_index: u32,
         call_id: String,
+        name: String,
         arguments: String,
     },
     ResponseMcpCallArgumentsDelta {
@@ -278,6 +286,12 @@ enum ServerEventRepr {
     SessionUpdated {
         event_id: String,
         session: Session,
+    },
+    #[serde(rename = "conversation.item.created")]
+    ConversationItemCreated {
+        event_id: String,
+        previous_item_id: Option<String>,
+        item: Item,
     },
     #[serde(rename = "conversation.item.added")]
     ConversationItemAdded {
@@ -390,6 +404,8 @@ enum ServerEventRepr {
         item_id: String,
         content_index: u32,
         transcript: String,
+        logprobs: Option<Value>,
+        usage: Option<Usage>,
     },
     #[serde(rename = "mcp_list_tools.in_progress")]
     McpListToolsInProgress {
@@ -519,6 +535,7 @@ enum ServerEventRepr {
         item_id: String,
         output_index: u32,
         call_id: String,
+        name: String,
         arguments: String,
     },
     #[serde(rename = "response.mcp_call_arguments.delta")]
@@ -569,6 +586,7 @@ impl From<ServerEventRepr> for ServerEvent {
             ServerEventRepr::Error { event_id, error } => Self::Error { event_id, error },
             ServerEventRepr::SessionCreated { event_id, session } => Self::SessionCreated { event_id, session },
             ServerEventRepr::SessionUpdated { event_id, session } => Self::SessionUpdated { event_id, session },
+            ServerEventRepr::ConversationItemCreated { event_id, previous_item_id, item } => Self::ConversationItemCreated { event_id, previous_item_id, item },
             ServerEventRepr::ConversationItemAdded { event_id, previous_item_id, item } => Self::ConversationItemAdded { event_id, previous_item_id, item },
             ServerEventRepr::ConversationItemDone { event_id, previous_item_id, item } => Self::ConversationItemDone { event_id, previous_item_id, item },
             ServerEventRepr::ConversationItemRetrieved { event_id, item } => Self::ConversationItemRetrieved { event_id, item },
@@ -585,7 +603,7 @@ impl From<ServerEventRepr> for ServerEvent {
             ServerEventRepr::InputAudioTranscriptionDelta { event_id, item_id, content_index, delta, obfuscation, logprobs } => Self::InputAudioTranscriptionDelta { event_id, item_id, content_index, delta, obfuscation, logprobs },
             ServerEventRepr::InputAudioTranscriptionSegment { event_id, item_id, content_index, text, id, speaker, start, end } => Self::InputAudioTranscriptionSegment { event_id, item_id, content_index, text, id, speaker, start, end },
             ServerEventRepr::InputAudioTranscriptionFailed { event_id, item_id, content_index, error } => Self::InputAudioTranscriptionFailed { event_id, item_id, content_index, error },
-            ServerEventRepr::InputAudioTranscriptionCompleted { event_id, item_id, content_index, transcript } => Self::InputAudioTranscriptionCompleted { event_id, item_id, content_index, transcript },
+            ServerEventRepr::InputAudioTranscriptionCompleted { event_id, item_id, content_index, transcript, logprobs, usage } => Self::InputAudioTranscriptionCompleted { event_id, item_id, content_index, transcript, logprobs, usage },
             ServerEventRepr::McpListToolsInProgress { event_id, item_id } => Self::McpListToolsInProgress { event_id, item_id },
             ServerEventRepr::McpListToolsCompleted { event_id, item_id } => Self::McpListToolsCompleted { event_id, item_id },
             ServerEventRepr::McpListToolsFailed { event_id, item_id, error } => Self::McpListToolsFailed { event_id, item_id, error },
@@ -602,7 +620,7 @@ impl From<ServerEventRepr> for ServerEvent {
             ServerEventRepr::ResponseOutputAudioTranscriptDelta { event_id, response_id, item_id, output_index, content_index, delta } => Self::ResponseOutputAudioTranscriptDelta { event_id, response_id, item_id, output_index, content_index, delta },
             ServerEventRepr::ResponseOutputAudioTranscriptDone { event_id, response_id, item_id, output_index, content_index, transcript } => Self::ResponseOutputAudioTranscriptDone { event_id, response_id, item_id, output_index, content_index, transcript },
             ServerEventRepr::ResponseFunctionCallArgumentsDelta { event_id, response_id, item_id, output_index, call_id, delta } => Self::ResponseFunctionCallArgumentsDelta { event_id, response_id, item_id, output_index, call_id, delta },
-            ServerEventRepr::ResponseFunctionCallArgumentsDone { event_id, response_id, item_id, output_index, call_id, arguments } => Self::ResponseFunctionCallArgumentsDone { event_id, response_id, item_id, output_index, call_id, arguments },
+            ServerEventRepr::ResponseFunctionCallArgumentsDone { event_id, response_id, item_id, output_index, call_id, name, arguments } => Self::ResponseFunctionCallArgumentsDone { event_id, response_id, item_id, output_index, call_id, name, arguments },
             ServerEventRepr::ResponseMcpCallArgumentsDelta { event_id, response_id, item_id, output_index, delta, obfuscation } => Self::ResponseMcpCallArgumentsDelta { event_id, response_id, item_id, output_index, delta, obfuscation },
             ServerEventRepr::ResponseMcpCallArgumentsDone { event_id, response_id, item_id, output_index, arguments } => Self::ResponseMcpCallArgumentsDone { event_id, response_id, item_id, output_index, arguments },
             ServerEventRepr::ResponseMcpCallInProgress { event_id, item_id, output_index } => Self::ResponseMcpCallInProgress { event_id, item_id, output_index },
@@ -626,6 +644,7 @@ impl Serialize for ServerEvent {
                     Self::Error { event_id, error } => ServerEventRepr::Error { event_id: event_id.clone(), error: error.clone() },
                     Self::SessionCreated { event_id, session } => ServerEventRepr::SessionCreated { event_id: event_id.clone(), session: session.clone() },
                     Self::SessionUpdated { event_id, session } => ServerEventRepr::SessionUpdated { event_id: event_id.clone(), session: session.clone() },
+                    Self::ConversationItemCreated { event_id, previous_item_id, item } => ServerEventRepr::ConversationItemCreated { event_id: event_id.clone(), previous_item_id: previous_item_id.clone(), item: item.clone() },
                     Self::ConversationItemAdded { event_id, previous_item_id, item } => ServerEventRepr::ConversationItemAdded { event_id: event_id.clone(), previous_item_id: previous_item_id.clone(), item: item.clone() },
                     Self::ConversationItemDone { event_id, previous_item_id, item } => ServerEventRepr::ConversationItemDone { event_id: event_id.clone(), previous_item_id: previous_item_id.clone(), item: item.clone() },
                     Self::ConversationItemRetrieved { event_id, item } => ServerEventRepr::ConversationItemRetrieved { event_id: event_id.clone(), item: item.clone() },
@@ -642,7 +661,7 @@ impl Serialize for ServerEvent {
                     Self::InputAudioTranscriptionDelta { event_id, item_id, content_index, delta, obfuscation, logprobs } => ServerEventRepr::InputAudioTranscriptionDelta { event_id: event_id.clone(), item_id: item_id.clone(), content_index: *content_index, delta: delta.clone(), obfuscation: obfuscation.clone(), logprobs: logprobs.clone() },
                     Self::InputAudioTranscriptionSegment { event_id, item_id, content_index, text, id, speaker, start, end } => ServerEventRepr::InputAudioTranscriptionSegment { event_id: event_id.clone(), item_id: item_id.clone(), content_index: *content_index, text: text.clone(), id: id.clone(), speaker: speaker.clone(), start: *start, end: *end },
                     Self::InputAudioTranscriptionFailed { event_id, item_id, content_index, error } => ServerEventRepr::InputAudioTranscriptionFailed { event_id: event_id.clone(), item_id: item_id.clone(), content_index: *content_index, error: error.clone() },
-                    Self::InputAudioTranscriptionCompleted { event_id, item_id, content_index, transcript } => ServerEventRepr::InputAudioTranscriptionCompleted { event_id: event_id.clone(), item_id: item_id.clone(), content_index: *content_index, transcript: transcript.clone() },
+                    Self::InputAudioTranscriptionCompleted { event_id, item_id, content_index, transcript, logprobs, usage } => ServerEventRepr::InputAudioTranscriptionCompleted { event_id: event_id.clone(), item_id: item_id.clone(), content_index: *content_index, transcript: transcript.clone(), logprobs: logprobs.clone(), usage: usage.clone() },
                     Self::McpListToolsInProgress { event_id, item_id } => ServerEventRepr::McpListToolsInProgress { event_id: event_id.clone(), item_id: item_id.clone() },
                     Self::McpListToolsCompleted { event_id, item_id } => ServerEventRepr::McpListToolsCompleted { event_id: event_id.clone(), item_id: item_id.clone() },
                     Self::McpListToolsFailed { event_id, item_id, error } => ServerEventRepr::McpListToolsFailed { event_id: event_id.clone(), item_id: item_id.clone(), error: error.clone() },
@@ -659,7 +678,7 @@ impl Serialize for ServerEvent {
                     Self::ResponseOutputAudioTranscriptDelta { event_id, response_id, item_id, output_index, content_index, delta } => ServerEventRepr::ResponseOutputAudioTranscriptDelta { event_id: event_id.clone(), response_id: response_id.clone(), item_id: item_id.clone(), output_index: *output_index, content_index: *content_index, delta: delta.clone() },
                     Self::ResponseOutputAudioTranscriptDone { event_id, response_id, item_id, output_index, content_index, transcript } => ServerEventRepr::ResponseOutputAudioTranscriptDone { event_id: event_id.clone(), response_id: response_id.clone(), item_id: item_id.clone(), output_index: *output_index, content_index: *content_index, transcript: transcript.clone() },
                     Self::ResponseFunctionCallArgumentsDelta { event_id, response_id, item_id, output_index, call_id, delta } => ServerEventRepr::ResponseFunctionCallArgumentsDelta { event_id: event_id.clone(), response_id: response_id.clone(), item_id: item_id.clone(), output_index: *output_index, call_id: call_id.clone(), delta: delta.clone() },
-                    Self::ResponseFunctionCallArgumentsDone { event_id, response_id, item_id, output_index, call_id, arguments } => ServerEventRepr::ResponseFunctionCallArgumentsDone { event_id: event_id.clone(), response_id: response_id.clone(), item_id: item_id.clone(), output_index: *output_index, call_id: call_id.clone(), arguments: arguments.clone() },
+                    Self::ResponseFunctionCallArgumentsDone { event_id, response_id, item_id, output_index, call_id, name, arguments } => ServerEventRepr::ResponseFunctionCallArgumentsDone { event_id: event_id.clone(), response_id: response_id.clone(), item_id: item_id.clone(), output_index: *output_index, call_id: call_id.clone(), name: name.clone(), arguments: arguments.clone() },
                     Self::ResponseMcpCallArgumentsDelta { event_id, response_id, item_id, output_index, delta, obfuscation } => ServerEventRepr::ResponseMcpCallArgumentsDelta { event_id: event_id.clone(), response_id: response_id.clone(), item_id: item_id.clone(), output_index: *output_index, delta: delta.clone(), obfuscation: obfuscation.clone() },
                     Self::ResponseMcpCallArgumentsDone { event_id, response_id, item_id, output_index, arguments } => ServerEventRepr::ResponseMcpCallArgumentsDone { event_id: event_id.clone(), response_id: response_id.clone(), item_id: item_id.clone(), output_index: *output_index, arguments: arguments.clone() },
                     Self::ResponseMcpCallInProgress { event_id, item_id, output_index } => ServerEventRepr::ResponseMcpCallInProgress { event_id: event_id.clone(), item_id: item_id.clone(), output_index: *output_index },
@@ -706,7 +725,7 @@ impl ServerEvent {
             };
         }
         extract!(
-            Error, SessionCreated, SessionUpdated, ConversationItemAdded,
+            Error, SessionCreated, SessionUpdated, ConversationItemCreated, ConversationItemAdded,
             ConversationItemDone, ConversationItemRetrieved, ConversationItemDeleted,
             ConversationItemTruncated, InputAudioBufferCommitted, InputAudioBufferCleared,
             InputAudioBufferSpeechStarted, InputAudioBufferSpeechStopped,

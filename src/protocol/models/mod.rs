@@ -12,7 +12,7 @@ pub use audio::{
 };
 pub use common::{
     ArbitraryJson, DEFAULT_MODEL, Eagerness, Infinite, ItemStatus, JsonSchema, MaxTokens, Metadata,
-    Modality, OutputModalities, PromptRef, Role, Temperature, TemperatureError, Voice,
+    Modality, Nullable, OutputModalities, PromptRef, Role, Temperature, TemperatureError, Voice,
 };
 pub use items::{AudioPartFormat, ContentPart, Item};
 pub use response::{

@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use super::{Eagerness, Voice};
+use super::{Eagerness, Nullable, Voice};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(transparent)]
@@ -67,9 +67,9 @@ pub struct AudioConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct InputAudioConfig {
     pub format: Option<AudioFormat>,
-    pub turn_detection: Option<TurnDetection>,
-    pub transcription: Option<InputAudioTranscription>,
-    pub noise_reduction: Option<NoiseReduction>,
+    pub turn_detection: Option<Nullable<TurnDetection>>,
+    pub transcription: Option<Nullable<InputAudioTranscription>>,
+    pub noise_reduction: Option<Nullable<NoiseReduction>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

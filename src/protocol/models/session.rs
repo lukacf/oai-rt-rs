@@ -1,8 +1,9 @@
 use serde::{Deserialize, Serialize};
+use serde::ser::SerializeMap;
 
 use super::{
-    AudioConfig, AudioFormat, InputAudioTranscription, MaxTokens, Modality, OutputModalities,
-    PromptRef, Temperature, Tool, ToolChoice, Voice,
+    AudioConfig, AudioFormat, InputAudioTranscription, MaxTokens, Modality, Nullable,
+    OutputModalities, PromptRef, Temperature, Tool, ToolChoice, TurnDetection, Voice,
 };
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -80,8 +81,8 @@ pub struct SessionConfig {
     pub instructions: Option<String>,
     pub input_audio_format: Option<AudioFormat>,
     pub output_audio_format: Option<AudioFormat>,
-    pub input_audio_transcription: Option<InputAudioTranscription>,
-    pub turn_detection: Option<super::TurnDetection>,
+    pub input_audio_transcription: Option<Nullable<InputAudioTranscription>>,
+    pub turn_detection: Option<Nullable<TurnDetection>>,
     pub tools: Option<Vec<Tool>>,
     pub tool_choice: Option<ToolChoice>,
     pub temperature: Option<Temperature>,
@@ -133,8 +134,8 @@ pub struct SessionUpdateConfig {
     pub instructions: Option<String>,
     pub input_audio_format: Option<AudioFormat>,
     pub output_audio_format: Option<AudioFormat>,
-    pub input_audio_transcription: Option<InputAudioTranscription>,
-    pub turn_detection: Option<super::TurnDetection>,
+    pub input_audio_transcription: Option<Nullable<InputAudioTranscription>>,
+    pub turn_detection: Option<Nullable<TurnDetection>>,
     pub tools: Option<Vec<Tool>>,
     pub tool_choice: Option<ToolChoice>,
     pub temperature: Option<Temperature>,
@@ -153,9 +154,26 @@ pub struct Session {
     pub config: SessionConfig,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Default)]
 pub struct SessionUpdate {
     /// Flattened to match the API's session.update JSON shape.
     #[serde(flatten)]
     pub config: SessionUpdateConfig,
+}
+
+impl Serialize for SessionUpdate {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry("type", "realtime")?;
+        let value = serde_json::to_value(&self.config).map_err(serde::ser::Error::custom)?;
+        if let serde_json::Value::Object(obj) = value {
+            for (k, v) in obj {
+                map.serialize_entry(&k, &v)?;
+            }
+        }
+        map.end()
+    }
 }

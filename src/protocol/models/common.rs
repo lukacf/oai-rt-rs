@@ -13,6 +13,24 @@ pub type JsonSchema = Value;
 /// Free-form JSON payloads where the spec is open-ended.
 pub type ArbitraryJson = Value;
 
+/// Tri-state helper for fields that can be omitted, set to null, or set to a value.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum Nullable<T> {
+    Value(T),
+    Null,
+}
+
+impl<T> Nullable<T> {
+    #[must_use]
+    pub const fn as_ref(&self) -> Option<&T> {
+        match self {
+            Self::Value(value) => Some(value),
+            Self::Null => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
