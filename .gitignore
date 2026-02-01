@@ -1,1 +1,3 @@
 /target
+.mcp-the-force/
+*.sqlite3
