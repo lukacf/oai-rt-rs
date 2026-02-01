@@ -4,18 +4,18 @@
 //! protocol types accessible through `crate::protocol` when you need full control.
 
 mod builder;
-mod calls;
 pub mod events;
 mod handlers;
 mod response;
 mod session;
+mod voice;
 mod tools;
 mod transport;
 
-pub use builder::{Realtime, RealtimeBuilder};
-pub use calls::Calls;
+pub use builder::{Realtime, RealtimeBuilder, VoiceSessionBuilder};
 pub use events::{EventStream, SdkEvent};
 pub use handlers::{EventHandlers, RawEventHandler, TextHandler, ToolCallHandler};
 pub use response::ResponseBuilder;
 pub use session::{Session, SessionHandle};
+pub use voice::{VoiceEvent, VoiceEventStream};
 pub use tools::{BoxFuture as ToolFuture, ToolCall, ToolDefinition, ToolRegistry, ToolResult, ToolSpec};

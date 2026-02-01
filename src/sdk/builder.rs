@@ -1,5 +1,7 @@
 use crate::protocol::models::{
-    MaxTokens, OutputModalities, SessionConfig, SessionKind, Temperature, ToolChoice,
+    AudioConfig, AudioFormat, InputAudioConfig, InputAudioTranscription, MaxTokens, NoiseReduction,
+    OutputAudioConfig, OutputModalities, SessionConfig, SessionKind, Temperature, ToolChoice,
+    TurnDetection,
 };
 use crate::{Error, Result};
 
@@ -32,6 +34,7 @@ pub struct RealtimeBuilder {
     tool_choice: Option<ToolChoice>,
     temperature: Option<Temperature>,
     max_output_tokens: Option<MaxTokens>,
+    audio: Option<AudioConfig>,
     handlers: EventHandlers,
     tools: ToolRegistry,
 }
@@ -48,6 +51,7 @@ impl RealtimeBuilder {
             tool_choice: None,
             temperature: None,
             max_output_tokens: None,
+            audio: None,
             handlers: EventHandlers::new(),
             tools: ToolRegistry::new(),
         }
@@ -93,6 +97,11 @@ impl RealtimeBuilder {
     pub const fn max_output_tokens(mut self, max_output_tokens: MaxTokens) -> Self {
         self.max_output_tokens = Some(max_output_tokens);
         self
+    }
+
+    #[must_use]
+    pub fn voice_session(self) -> VoiceSessionBuilder {
+        VoiceSessionBuilder::new(self)
     }
 
     #[must_use]
@@ -202,6 +211,9 @@ impl RealtimeBuilder {
         session.tool_choice = self.tool_choice;
         session.temperature = self.temperature;
         session.max_output_tokens = self.max_output_tokens;
+        if let Some(audio) = self.audio {
+            session.audio = Some(audio);
+        }
         if !self.tools.is_empty() {
             session.tools = Some(self.tools.try_as_tools()?);
         }
@@ -227,5 +239,160 @@ impl RealtimeBuilder {
 impl Default for RealtimeBuilder {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+pub struct VoiceSessionBuilder {
+    inner: RealtimeBuilder,
+}
+
+impl VoiceSessionBuilder {
+    #[must_use]
+    fn new(mut inner: RealtimeBuilder) -> Self {
+        let input = InputAudioConfig {
+            format: Some(AudioFormat::pcm_24khz()),
+            turn_detection: Some(crate::protocol::models::Nullable::Value(TurnDetection::ServerVad {
+                threshold: None,
+                prefix_padding_ms: None,
+                silence_duration_ms: None,
+                idle_timeout_ms: None,
+                create_response: Some(true),
+                interrupt_response: Some(true),
+            })),
+            transcription: None,
+            noise_reduction: None,
+        };
+        let output = OutputAudioConfig {
+            format: Some(AudioFormat::pcm_24khz()),
+            voice: None,
+            speed: None,
+        };
+        inner.output_modalities = Some(OutputModalities::Audio);
+        inner.audio = Some(AudioConfig {
+            input: Some(input),
+            output: Some(output),
+        });
+        Self { inner }
+    }
+
+    #[must_use]
+    pub fn api_key(mut self, key: impl Into<String>) -> Self {
+        self.inner = self.inner.api_key(key);
+        self
+    }
+
+    #[must_use]
+    pub fn model(mut self, model: impl Into<String>) -> Self {
+        self.inner = self.inner.model(model);
+        self
+    }
+
+    #[must_use]
+    pub fn voice(mut self, voice: impl Into<String>) -> Self {
+        self.inner = self.inner.voice(voice);
+        if let Some(audio) = self.inner.audio.as_mut() {
+            if let Some(output) = audio.output.as_mut() {
+                output.voice = self.inner.voice.clone().map(crate::protocol::models::Voice::from);
+            }
+        }
+        self
+    }
+
+    #[must_use]
+    pub fn instructions(mut self, instructions: impl Into<String>) -> Self {
+        self.inner = self.inner.instructions(instructions);
+        self
+    }
+
+    #[must_use]
+    pub fn vad_server_default(self) -> Self {
+        let vad = TurnDetection::ServerVad {
+            threshold: None,
+            prefix_padding_ms: None,
+            silence_duration_ms: None,
+            idle_timeout_ms: None,
+            create_response: Some(true),
+            interrupt_response: Some(true),
+        };
+        self.set_turn_detection(vad)
+    }
+
+    #[must_use]
+    pub fn set_turn_detection(mut self, vad: TurnDetection) -> Self {
+        if let Some(audio) = self.inner.audio.as_mut() {
+            if let Some(input) = audio.input.as_mut() {
+                input.turn_detection = Some(crate::protocol::models::Nullable::Value(vad));
+            }
+        }
+        self
+    }
+
+    #[must_use]
+    pub fn transcription(mut self, model: impl Into<String>) -> Self {
+        let transcription = InputAudioTranscription {
+            model: Some(model.into()),
+            language: None,
+            prompt: None,
+        };
+        if let Some(audio) = self.inner.audio.as_mut() {
+            if let Some(input) = audio.input.as_mut() {
+                input.transcription = Some(crate::protocol::models::Nullable::Value(transcription));
+            }
+        }
+        self
+    }
+
+    #[must_use]
+    pub fn noise_reduction(mut self, noise_reduction: NoiseReduction) -> Self {
+        if let Some(audio) = self.inner.audio.as_mut() {
+            if let Some(input) = audio.input.as_mut() {
+                input.noise_reduction = Some(crate::protocol::models::Nullable::Value(noise_reduction));
+            }
+        }
+        self
+    }
+
+    #[must_use]
+    pub fn tools(mut self, tools: ToolRegistry) -> Self {
+        self.inner = self.inner.tools(tools);
+        self
+    }
+
+    #[must_use]
+    pub fn on_text<F, Fut>(mut self, handler: F) -> Self
+    where
+        F: Fn(String) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = Result<()>> + Send + 'static,
+    {
+        self.inner = self.inner.on_text(handler);
+        self
+    }
+
+    #[must_use]
+    pub fn on_tool_call<F, Fut>(mut self, handler: F) -> Self
+    where
+        F: Fn(super::ToolCall) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = Result<super::ToolResult>> + Send + 'static,
+    {
+        self.inner = self.inner.on_tool_call(handler);
+        self
+    }
+
+    #[must_use]
+    pub fn on_raw_event<F, Fut>(mut self, handler: F) -> Self
+    where
+        F: Fn(crate::protocol::server_events::ServerEvent) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = Result<()>> + Send + 'static,
+    {
+        self.inner = self.inner.on_raw_event(handler);
+        self
+    }
+
+    /// Connect via WebSocket using the configured voice session.
+    ///
+    /// # Errors
+    /// Returns an error if configuration is incomplete or the connection fails.
+    pub async fn connect_ws(self) -> Result<super::Session> {
+        self.inner.connect_ws().await
     }
 }

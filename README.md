@@ -5,50 +5,40 @@ A Rust client for the [OpenAI Realtime API](https://platform.openai.com/docs/gui
 ## Features
 
 - GA-aligned Realtime API protocol models (WebSocket + REST).
+- Voice-first SDK with full-duplex audio streaming, VAD, and barge-in helpers.
 - Strongly typed `ClientEvent` and `ServerEvent` enums.
-- WebRTC SDP signaling, SIP control endpoints, and call hangup.
+- WebRTC SDP signaling, SIP control endpoints, and call hangup (low-level REST).
 - Async interface using `tokio` and `tokio-tungstenite`.
 - Client-side validation for GA constraints (PCM 24kHz, output modalities, 15MB audio chunks).
 
-## Quickstart (SDK)
+## Quickstart (Voice-first SDK)
 
 ```rust
-use oai_rt_rs::{Realtime, ToolRegistry};
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Deserialize, JsonSchema)]
-struct EchoArgs {
-    text: String,
-}
-
-#[derive(Debug, Serialize)]
-struct EchoResp {
-    echoed: String,
-}
-
 #[tokio::main]
 async fn main() -> oai_rt_rs::Result<()> {
-    let mut tools = ToolRegistry::new();
-    tools.tool_with_description("echo", "Echo back the input.", |args: EchoArgs| async move {
-        Ok(EchoResp { echoed: args.text })
-    });
-
     let mut session = Realtime::builder()
         .api_key("your-api-key")
         .model("gpt-realtime")
-        .instructions("Be helpful.")
-        .output_audio()
-        .tools(tools)
-        .on_text(|text| async move {
-            println!("assistant: {text}");
-            Ok(())
-        })
+        .voice_session()
+        .voice("alloy")
+        .vad_server_default()
+        .transcription("gpt-4o-transcribe")
         .connect_ws()
         .await?;
 
-    let reply = session.ask("Hello!").await?;
-    println!("received: {:?}", reply);
+    // Stream voice events (audio deltas + transcripts).
+    while let Some(evt) = session.next_voice_event().await? {
+        match evt {
+            oai_rt_rs::VoiceEvent::AudioDelta { pcm, .. } => {
+                // play PCM16 @ 24kHz
+                println!("audio bytes: {}", pcm.len());
+            }
+            oai_rt_rs::VoiceEvent::TranscriptDone { transcript, .. } => {
+                println!("assistant: {transcript}");
+            }
+            _ => {}
+        }
+    }
     Ok(())
 }
 ```
@@ -65,6 +55,17 @@ ResponseBuilder::new()
     .input_text("Summarize this.")
     .send(session)
     .await?;
+# Ok(())
+# }
+```
+
+## Sending microphone audio
+
+```rust
+# async fn demo(mut session: oai_rt_rs::RealtimeSession) -> oai_rt_rs::Result<()> {
+let pcm_samples: Vec<i16> = vec![0; 2400]; // 100ms @ 24kHz
+session.audio_in_append_pcm16(&pcm_samples).await?;
+session.audio_in_commit().await?;
 # Ok(())
 # }
 ```
@@ -132,12 +133,14 @@ async fn main() -> oai_rt_rs::Result<()> {
 
 ## REST helpers (WebRTC/SIP)
 
+Use the low-level REST adapter for call control:
+
 ```rust
-use oai_rt_rs::{Calls};
+use oai_rt_rs::transport::rest::RealtimeRestAdapter;
 use oai_rt_rs::protocol::models::{SessionConfig, SessionKind, OutputModalities};
 
 # async fn demo() -> oai_rt_rs::Result<()> {
-let rest = Calls::new("your-api-key")?;
+let rest = RealtimeRestAdapter::new("your-api-key")?;
 let session = SessionConfig::new(
     SessionKind::Realtime,
     "gpt-realtime",
@@ -145,7 +148,7 @@ let session = SessionConfig::new(
 );
 
 // WebRTC (raw SDP) + call_id capture
-let resp = rest.webrtc_offer_raw_with_call_id("v=0...".to_string()).await?;
+let resp = rest.post_sdp_offer_raw_with_call_id("v=0...".to_string()).await?;
 println!("call_id: {:?}", resp.call_id);
 
 // Hang up

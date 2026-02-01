@@ -42,6 +42,14 @@ fn builder_chain_compiles() {
 }
 
 #[test]
+fn voice_session_builder_compiles() {
+    let _ = Realtime::builder()
+        .voice_session()
+        .voice("alloy")
+        .vad_server_default();
+}
+
+#[test]
 fn tool_registry_collects_definitions() {
     let mut registry = ToolRegistry::new();
     registry.tool("echo", |args: EchoArgs| async move {

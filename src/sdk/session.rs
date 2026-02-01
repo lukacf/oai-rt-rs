@@ -8,10 +8,14 @@ use crate::{Error, Result};
 use super::events::{EventStream, SdkEvent};
 use super::handlers::EventHandlers;
 use super::response::ResponseBuilder;
+use super::voice::{VoiceEvent, VoiceEventStream};
 use super::tools::{ToolCall, ToolRegistry, ToolResult};
 use super::transport::Transport;
 use std::collections::HashMap;
-use tokio::sync::{mpsc, oneshot};
+use std::sync::Arc;
+use tokio::sync::{mpsc, oneshot, Mutex};
+use base64::engine::general_purpose;
+use base64::Engine as _;
 
 #[derive(Clone)]
 pub struct SessionHandle {
@@ -22,6 +26,8 @@ pub struct Session {
     sender: mpsc::Sender<Command>,
     text_rx: mpsc::Receiver<String>,
     event_rx: mpsc::Receiver<SdkEvent>,
+    voice_rx: mpsc::Receiver<VoiceEvent>,
+    active_response_id: Arc<Mutex<Option<String>>>,
 }
 
 impl Session {
@@ -75,11 +81,75 @@ impl Session {
         EventStream::new(&mut self.event_rx)
     }
 
+    /// Await the next voice event.
+    ///
+    /// # Errors
+    /// Returns an error if the SDK is not fully initialized or the stream fails.
+    pub async fn next_voice_event(&mut self) -> Result<Option<VoiceEvent>> {
+        Ok(self.voice_rx.recv().await)
+    }
+
+    /// Stream voice events.
+    #[must_use]
+    pub fn voice_events(&mut self) -> VoiceEventStream<'_> {
+        VoiceEventStream::new(&mut self.voice_rx)
+    }
+
     /// Send a raw protocol event.
     ///
     /// # Errors
     /// Returns an error if the SDK is not fully initialized or the send fails.
     pub async fn send_raw(&self, event: ClientEvent) -> Result<()> {
+        self.send_event(event).await
+    }
+
+    /// Append PCM16 audio samples to the input audio buffer.
+    ///
+    /// # Errors
+    /// Returns an error if encoding or send fails.
+    pub async fn audio_in_append_pcm16(&self, samples: &[i16]) -> Result<()> {
+        if samples.is_empty() {
+            return Ok(());
+        }
+
+        let mut buf = Vec::with_capacity(samples.len() * 2);
+        for sample in samples {
+            buf.extend_from_slice(&sample.to_le_bytes());
+        }
+        self.audio_in_append_bytes(&buf).await
+    }
+
+    /// Append raw PCM16 bytes to the input audio buffer.
+    ///
+    /// # Errors
+    /// Returns an error if encoding or send fails.
+    pub async fn audio_in_append_bytes(&self, pcm_bytes: &[u8]) -> Result<()> {
+        if pcm_bytes.is_empty() {
+            return Ok(());
+        }
+        let encoded = general_purpose::STANDARD.encode(pcm_bytes);
+        let event = ClientEvent::InputAudioBufferAppend {
+            event_id: None,
+            audio: encoded,
+        };
+        self.send_event(event).await
+    }
+
+    /// Commit the current input audio buffer.
+    ///
+    /// # Errors
+    /// Returns an error if the send fails.
+    pub async fn audio_in_commit(&self) -> Result<()> {
+        let event = ClientEvent::InputAudioBufferCommit { event_id: None };
+        self.send_event(event).await
+    }
+
+    /// Clear the input audio buffer.
+    ///
+    /// # Errors
+    /// Returns an error if the send fails.
+    pub async fn audio_in_clear(&self) -> Result<()> {
+        let event = ClientEvent::InputAudioBufferClear { event_id: None };
         self.send_event(event).await
     }
 
@@ -135,6 +205,32 @@ impl Session {
             event_id: None,
             response: None,
         };
+        self.send_event(event).await
+    }
+
+    /// Clear output audio and cancel any active response (barge-in).
+    ///
+    /// # Errors
+    /// Returns an error if the SDK is not fully initialized or the send fails.
+    pub async fn barge_in(&self) -> Result<()> {
+        self.clear_output_audio().await?;
+        let response_id = { self.active_response_id.lock().await.clone() };
+        if let Some(id) = response_id {
+            let event = ClientEvent::ResponseCancel {
+                event_id: None,
+                response_id: Some(id),
+            };
+            self.send_event(event).await?;
+        }
+        Ok(())
+    }
+
+    /// Clear the output audio buffer.
+    ///
+    /// # Errors
+    /// Returns an error if the send fails.
+    pub async fn clear_output_audio(&self) -> Result<()> {
+        let event = ClientEvent::OutputAudioBufferClear { event_id: None };
         self.send_event(event).await
     }
 
@@ -204,6 +300,9 @@ impl Session {
         let (cmd_tx, mut cmd_rx) = mpsc::channel::<Command>(64);
         let (text_tx, text_rx) = mpsc::channel::<String>(64);
         let (event_tx, event_rx) = mpsc::channel::<SdkEvent>(128);
+        let (voice_tx, voice_rx) = mpsc::channel::<VoiceEvent>(128);
+        let active_response_id = Arc::new(Mutex::new(None));
+        let active_response_id_task = Arc::clone(&active_response_id);
 
         tokio::spawn(async move {
             let mut buffers: HashMap<(String, u32), String> = HashMap::new();
@@ -225,63 +324,17 @@ impl Session {
                     event = transport.next_event() => {
                         match event {
                             Ok(Some(evt)) => {
-                                if let Some(mapped) = SdkEvent::from_server(evt.clone()) {
-                                    let _ = event_tx.send(mapped).await;
-                                }
-                                if let Some(handler) = &handlers.on_raw_event {
-                                    let _ = handler(evt.clone()).await;
-                                }
-
-                                match evt {
-                                    ServerEvent::ResponseOutputTextDelta { item_id, content_index, delta, .. } => {
-                                        let key = (item_id, content_index);
-                                        let entry = buffers.entry(key).or_default();
-                                        entry.push_str(&delta);
-                                    }
-                                    ServerEvent::ResponseOutputTextDone { item_id, content_index, text, .. } => {
-                                        let key = (item_id, content_index);
-                                        buffers.remove(&key);
-                                        let _ = text_tx.send(text.clone()).await;
-                                        if let Some(handler) = &handlers.on_text {
-                                            let _ = handler(text).await;
-                                        }
-                                    }
-                                    ServerEvent::ResponseFunctionCallArgumentsDone { response_id, item_id, output_index, call_id, name, arguments, .. } => {
-                                        let arguments = serde_json::from_str(&arguments)
-                                            .unwrap_or(serde_json::Value::String(arguments));
-                                        let call = ToolCall {
-                                            name,
-                                            call_id: call_id.clone(),
-                                            arguments,
-                                            response_id: Some(response_id),
-                                            item_id: Some(item_id),
-                                            output_index: Some(output_index),
-                                        };
-
-                                        let result = if let Some(handler) = &handlers.on_tool_call {
-                                            handler(call).await
-                                        } else {
-                                            tools.dispatch(call).await
-                                        };
-
-                                        if let Ok(tool_result) = result {
-                                            let output = serde_json::to_string(&tool_result.output)
-                                                .unwrap_or_else(|_| String::new());
-                                            let item = Item::FunctionCallOutput {
-                                                id: None,
-                                                call_id: tool_result.call_id,
-                                                output,
-                                            };
-                                            let event = ClientEvent::ConversationItemCreate {
-                                                event_id: None,
-                                                previous_item_id: None,
-                                                item: Box::new(item),
-                                            };
-                                            let _ = transport.send(event).await;
-                                        }
-                                    }
-                                    _ => {}
-                                }
+                                let mut ctx = EventContext {
+                                    handlers: &handlers,
+                                    tools: &tools,
+                                    transport: &mut transport,
+                                    buffers: &mut buffers,
+                                    event_tx: &event_tx,
+                                    text_tx: &text_tx,
+                                    voice_tx: &voice_tx,
+                                    active_response_id: &active_response_id_task,
+                                };
+                                handle_server_event(evt, &mut ctx).await;
                             }
                             Ok(None) | Err(_) => break,
                         }
@@ -294,7 +347,164 @@ impl Session {
             sender: cmd_tx,
             text_rx,
             event_rx,
+            voice_rx,
+            active_response_id,
         }
+    }
+}
+
+struct EventContext<'a> {
+    handlers: &'a EventHandlers,
+    tools: &'a ToolRegistry,
+    transport: &'a mut Box<dyn Transport>,
+    buffers: &'a mut HashMap<(String, u32), String>,
+    event_tx: &'a mpsc::Sender<SdkEvent>,
+    text_tx: &'a mpsc::Sender<String>,
+    voice_tx: &'a mpsc::Sender<VoiceEvent>,
+    active_response_id: &'a Arc<Mutex<Option<String>>>,
+}
+
+async fn handle_server_event(evt: ServerEvent, ctx: &mut EventContext<'_>) {
+    handle_voice_events(&evt, ctx.voice_tx, ctx.active_response_id).await;
+
+    if let Some(mapped) = SdkEvent::from_server(evt.clone()) {
+        let _ = ctx.event_tx.send(mapped).await;
+    }
+    if let Some(handler) = &ctx.handlers.on_raw_event {
+        let _ = handler(evt.clone()).await;
+    }
+
+    match evt {
+        ServerEvent::ResponseOutputTextDelta { item_id, content_index, delta, .. } => {
+            let key = (item_id, content_index);
+            let entry = ctx.buffers.entry(key).or_default();
+            entry.push_str(&delta);
+        }
+        ServerEvent::ResponseOutputTextDone { item_id, content_index, text, .. } => {
+            let key = (item_id, content_index);
+            ctx.buffers.remove(&key);
+            let _ = ctx.text_tx.send(text.clone()).await;
+            if let Some(handler) = &ctx.handlers.on_text {
+                let _ = handler(text).await;
+            }
+        }
+        ServerEvent::ResponseFunctionCallArgumentsDone { response_id, item_id, output_index, call_id, name, arguments, .. } => {
+            let arguments = serde_json::from_str(&arguments)
+                .unwrap_or(serde_json::Value::String(arguments));
+            let call = ToolCall {
+                name,
+                call_id: call_id.clone(),
+                arguments,
+                response_id: Some(response_id),
+                item_id: Some(item_id),
+                output_index: Some(output_index),
+            };
+
+            let result = if let Some(handler) = &ctx.handlers.on_tool_call {
+                handler(call).await
+            } else {
+                ctx.tools.dispatch(call).await
+            };
+
+            if let Ok(tool_result) = result {
+                let output = serde_json::to_string(&tool_result.output)
+                    .unwrap_or_else(|_| String::new());
+                let item = Item::FunctionCallOutput {
+                    id: None,
+                    call_id: tool_result.call_id,
+                    output,
+                };
+                let event = ClientEvent::ConversationItemCreate {
+                    event_id: None,
+                    previous_item_id: None,
+                    item: Box::new(item),
+                };
+                let _ = ctx.transport.send(event).await;
+            }
+        }
+        _ => {}
+    }
+}
+
+async fn handle_voice_events(
+    evt: &ServerEvent,
+    voice_tx: &mpsc::Sender<VoiceEvent>,
+    active_response_id: &Arc<Mutex<Option<String>>>,
+) {
+    match evt {
+        ServerEvent::ResponseCreated { response, .. } => {
+            {
+                let mut guard = active_response_id.lock().await;
+                *guard = Some(response.id.clone());
+            }
+            let _ = voice_tx.send(VoiceEvent::ResponseCreated {
+                response_id: response.id.clone(),
+            }).await;
+        }
+        ServerEvent::ResponseDone { response, .. } => {
+            {
+                let mut guard = active_response_id.lock().await;
+                *guard = None;
+            }
+            let _ = voice_tx.send(VoiceEvent::ResponseDone {
+                response_id: response.id.clone(),
+            }).await;
+        }
+        ServerEvent::InputAudioBufferSpeechStarted { audio_start_ms, .. } => {
+            let _ = voice_tx.send(VoiceEvent::SpeechStarted {
+                audio_start_ms: Some(*audio_start_ms),
+            }).await;
+        }
+        ServerEvent::InputAudioBufferSpeechStopped { audio_end_ms, .. } => {
+            let _ = voice_tx.send(VoiceEvent::SpeechStopped {
+                audio_end_ms: Some(*audio_end_ms),
+            }).await;
+        }
+        ServerEvent::ResponseOutputAudioDelta { response_id, item_id, output_index, content_index, delta, .. } => {
+            match general_purpose::STANDARD.decode(delta.as_bytes()) {
+                Ok(pcm) => {
+                    let _ = voice_tx.send(VoiceEvent::AudioDelta {
+                        response_id: response_id.clone(),
+                        item_id: item_id.clone(),
+                        output_index: *output_index,
+                        content_index: *content_index,
+                        pcm,
+                    }).await;
+                }
+                Err(err) => {
+                    let _ = voice_tx.send(VoiceEvent::DecodeError {
+                        message: err.to_string(),
+                    }).await;
+                }
+            }
+        }
+        ServerEvent::ResponseOutputAudioDone { response_id, item_id, output_index, content_index, .. } => {
+            let _ = voice_tx.send(VoiceEvent::AudioDone {
+                response_id: response_id.clone(),
+                item_id: item_id.clone(),
+                output_index: *output_index,
+                content_index: *content_index,
+            }).await;
+        }
+        ServerEvent::ResponseOutputAudioTranscriptDelta { response_id, item_id, output_index, content_index, delta, .. } => {
+            let _ = voice_tx.send(VoiceEvent::TranscriptDelta {
+                response_id: response_id.clone(),
+                item_id: item_id.clone(),
+                output_index: *output_index,
+                content_index: *content_index,
+                delta: delta.clone(),
+            }).await;
+        }
+        ServerEvent::ResponseOutputAudioTranscriptDone { response_id, item_id, output_index, content_index, transcript, .. } => {
+            let _ = voice_tx.send(VoiceEvent::TranscriptDone {
+                response_id: response_id.clone(),
+                item_id: item_id.clone(),
+                output_index: *output_index,
+                content_index: *content_index,
+                transcript: transcript.clone(),
+            }).await;
+        }
+        _ => {}
     }
 }
 
@@ -386,6 +596,7 @@ mod tests {
     use super::*;
     use crate::protocol::server_events::ServerEvent;
     use futures::StreamExt;
+    use base64::engine::general_purpose;
     use tokio::sync::mpsc;
 
     struct MockTransport {
@@ -598,5 +809,71 @@ mod tests {
         assert!(matches!(first, ClientEvent::ResponseCreate { .. }) || matches!(second, ClientEvent::ResponseCreate { .. }));
 
         drop(event_tx);
+    }
+
+    #[tokio::test]
+    async fn voice_event_audio_delta_decodes() {
+        let (event_tx, event_rx) = mpsc::channel(8);
+        let (out_tx, _out_rx) = mpsc::channel(8);
+        let transport = Box::new(MockTransport { incoming: event_rx, outgoing: out_tx });
+
+        let tools = ToolRegistry::new();
+        let mut session = Session::from_transport(transport, EventHandlers::new(), tools);
+
+        let pcm = vec![1u8, 2u8, 3u8, 4u8];
+        let delta = general_purpose::STANDARD.encode(&pcm);
+        let evt = ServerEvent::ResponseOutputAudioDelta {
+            event_id: "evt_1".to_string(),
+            response_id: "resp_1".to_string(),
+            item_id: "item_1".to_string(),
+            output_index: 0,
+            content_index: 0,
+            delta,
+        };
+        event_tx.send(evt).await.unwrap();
+
+        let voice = session.next_voice_event().await.unwrap().expect("voice event");
+        match voice {
+            VoiceEvent::AudioDelta { pcm: decoded, .. } => assert_eq!(decoded, pcm),
+            other => panic!("unexpected voice event: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn barge_in_sends_clear_and_cancel() {
+        let (event_tx, event_rx) = mpsc::channel(8);
+        let (out_tx, mut out_rx) = mpsc::channel(8);
+        let transport = Box::new(MockTransport { incoming: event_rx, outgoing: out_tx });
+
+        let tools = ToolRegistry::new();
+        let mut session = Session::from_transport(transport, EventHandlers::new(), tools);
+
+        let resp = crate::protocol::models::Response {
+            id: "resp_1".to_string(),
+            object: "response".to_string(),
+            conversation_id: None,
+            status: crate::protocol::models::ResponseStatus::InProgress,
+            status_details: None,
+            output: None,
+            output_modalities: None,
+            max_output_tokens: None,
+            audio: None,
+            metadata: None,
+            usage: None,
+        };
+        let evt = ServerEvent::ResponseCreated {
+            event_id: "evt_1".to_string(),
+            response: resp,
+        };
+        event_tx.send(evt).await.unwrap();
+
+        let _ = session.next_voice_event().await.unwrap();
+        session.barge_in().await.unwrap();
+
+        let first = out_rx.recv().await.unwrap();
+        let second = out_rx.recv().await.unwrap();
+
+        assert!(matches!(first, ClientEvent::OutputAudioBufferClear { .. }) || matches!(second, ClientEvent::OutputAudioBufferClear { .. }));
+        assert!(matches!(first, ClientEvent::ResponseCancel { .. }) || matches!(second, ClientEvent::ResponseCancel { .. }));
     }
 }
