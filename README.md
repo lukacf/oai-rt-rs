@@ -1,6 +1,10 @@
-# oai-rt-rs
+# Rust OpenAI Realtime SDK
 
 A Rust client for the [OpenAI Realtime API](https://platform.openai.com/docs/guides/realtime).
+
+[![Crates.io](https://img.shields.io/crates/v/oai-rt-rs.svg)](https://crates.io/crates/oai-rt-rs)
+[![Documentation](https://docs.rs/oai-rt-rs/badge.svg)](https://docs.rs/oai-rt-rs)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ## Features
 
