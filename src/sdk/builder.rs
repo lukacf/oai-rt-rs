@@ -35,6 +35,8 @@ pub struct RealtimeBuilder {
     temperature: Option<Temperature>,
     max_output_tokens: Option<MaxTokens>,
     audio: Option<AudioConfig>,
+    auto_barge_in: bool,
+    auto_tool_response: bool,
     handlers: EventHandlers,
     tools: ToolRegistry,
 }
@@ -52,6 +54,8 @@ impl RealtimeBuilder {
             temperature: None,
             max_output_tokens: None,
             audio: None,
+            auto_barge_in: false,
+            auto_tool_response: true,
             handlers: EventHandlers::new(),
             tools: ToolRegistry::new(),
         }
@@ -100,6 +104,18 @@ impl RealtimeBuilder {
     }
 
     #[must_use]
+    pub const fn auto_barge_in(mut self, enabled: bool) -> Self {
+        self.auto_barge_in = enabled;
+        self
+    }
+
+    #[must_use]
+    pub const fn auto_tool_response(mut self, enabled: bool) -> Self {
+        self.auto_tool_response = enabled;
+        self
+    }
+
+    #[must_use]
     pub fn voice_session(self) -> VoiceSessionBuilder {
         VoiceSessionBuilder::new(self)
     }
@@ -131,6 +147,23 @@ impl RealtimeBuilder {
         Fut: std::future::Future<Output = Result<TResp>> + Send + 'static,
     {
         self.tools.tool(name, handler);
+        self
+    }
+
+    #[must_use]
+    pub fn tool_desc<TArgs, TResp, F, Fut>(
+        mut self,
+        name: &str,
+        description: impl Into<String>,
+        handler: F,
+    ) -> Self
+    where
+        TArgs: schemars::JsonSchema + serde::de::DeserializeOwned + Send + 'static,
+        TResp: serde::Serialize + Send + 'static,
+        F: Fn(TArgs) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = Result<TResp>> + Send + 'static,
+    {
+        self.tools.tool_desc(name, description, handler);
         self
     }
 
@@ -224,6 +257,8 @@ impl RealtimeBuilder {
             session,
             handlers: self.handlers,
             tools: self.tools,
+            auto_barge_in: self.auto_barge_in,
+            auto_tool_response: self.auto_tool_response,
         })
     }
 
@@ -272,6 +307,7 @@ impl VoiceSessionBuilder {
             input: Some(input),
             output: Some(output),
         });
+        inner.auto_barge_in = true;
         Self { inner }
     }
 
@@ -353,8 +389,66 @@ impl VoiceSessionBuilder {
     }
 
     #[must_use]
+    pub const fn auto_barge_in(mut self, enabled: bool) -> Self {
+        self.inner.auto_barge_in = enabled;
+        self
+    }
+
+    #[must_use]
+    pub const fn auto_tool_response(mut self, enabled: bool) -> Self {
+        self.inner.auto_tool_response = enabled;
+        self
+    }
+
+    #[must_use]
     pub fn tools(mut self, tools: ToolRegistry) -> Self {
         self.inner = self.inner.tools(tools);
+        self
+    }
+
+    #[must_use]
+    pub fn tool<TArgs, TResp, F, Fut>(mut self, name: &str, handler: F) -> Self
+    where
+        TArgs: schemars::JsonSchema + serde::de::DeserializeOwned + Send + 'static,
+        TResp: serde::Serialize + Send + 'static,
+        F: Fn(TArgs) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = Result<TResp>> + Send + 'static,
+    {
+        self.inner = self.inner.tool(name, handler);
+        self
+    }
+
+    #[must_use]
+    pub fn tool_desc<TArgs, TResp, F, Fut>(
+        mut self,
+        name: &str,
+        description: impl Into<String>,
+        handler: F,
+    ) -> Self
+    where
+        TArgs: schemars::JsonSchema + serde::de::DeserializeOwned + Send + 'static,
+        TResp: serde::Serialize + Send + 'static,
+        F: Fn(TArgs) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = Result<TResp>> + Send + 'static,
+    {
+        self.inner = self.inner.tool_desc(name, description, handler);
+        self
+    }
+
+    #[must_use]
+    pub fn tool_with_description<TArgs, TResp, F, Fut>(
+        mut self,
+        name: &str,
+        description: impl Into<String>,
+        handler: F,
+    ) -> Self
+    where
+        TArgs: schemars::JsonSchema + serde::de::DeserializeOwned + Send + 'static,
+        TResp: serde::Serialize + Send + 'static,
+        F: Fn(TArgs) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = Result<TResp>> + Send + 'static,
+    {
+        self.inner = self.inner.tool_with_description(name, description, handler);
         self
     }
 

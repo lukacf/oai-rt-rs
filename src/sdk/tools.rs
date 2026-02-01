@@ -87,6 +87,21 @@ impl ToolRegistry {
         self.handlers.insert(name, Box::new(handler));
     }
 
+    pub fn tool_desc<TArgs, TResp, F, Fut>(
+        &mut self,
+        name: &str,
+        description: impl Into<String>,
+        handler: F,
+    )
+    where
+        TArgs: DeserializeOwned + JsonSchema + Send + 'static,
+        TResp: Serialize + Send + 'static,
+        F: Fn(TArgs) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<TResp>> + Send + 'static,
+    {
+        self.tool_with_description(name, description, handler);
+    }
+
     pub fn tool_with_description<TArgs, TResp, F, Fut>(
         &mut self,
         name: &str,

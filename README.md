@@ -23,6 +23,7 @@ async fn main() -> oai_rt_rs::Result<()> {
         .voice("alloy")
         .vad_server_default()
         .transcription("gpt-4o-transcribe")
+        .auto_barge_in(true)
         .connect_ws()
         .await?;
 
@@ -41,6 +42,30 @@ async fn main() -> oai_rt_rs::Result<()> {
     }
     Ok(())
 }
+```
+
+## Barge-in
+
+```rust
+# async fn demo(session: &oai_rt_rs::RealtimeSession) -> oai_rt_rs::Result<()> {
+// Manually barge-in (clear output + cancel active response).
+session.barge_in().await?;
+# Ok(())
+# }
+```
+
+## Convenience audio/transcript streams
+
+```rust
+# async fn demo(mut session: oai_rt_rs::RealtimeSession) -> oai_rt_rs::Result<()> {
+if let Some(chunk) = session.next_audio_chunk().await? {
+    println!("audio bytes: {}", chunk.pcm.len());
+}
+if let Some(tx) = session.next_transcript().await? {
+    println!("transcript: {}", tx.text);
+}
+# Ok(())
+# }
 ```
 
 ## Response builder (high-level)
@@ -64,16 +89,26 @@ ResponseBuilder::new()
 ```rust
 # async fn demo(mut session: oai_rt_rs::RealtimeSession) -> oai_rt_rs::Result<()> {
 let pcm_samples: Vec<i16> = vec![0; 2400]; // 100ms @ 24kHz
-session.audio_in_append_pcm16(&pcm_samples).await?;
-session.audio_in_commit().await?;
+session.audio().send_pcm16(&pcm_samples).await?;
 # Ok(())
 # }
 ```
 
-## Typed tools (macro)
+## Streaming microphone audio
 
 ```rust
-use oai_rt_rs::{realtime_tool, ToolRegistry};
+# async fn demo(session: oai_rt_rs::RealtimeSession) -> oai_rt_rs::Result<()> {
+let chunks = vec![vec![0i16; 480], vec![1i16; 480]];
+let stream = futures::stream::iter(chunks);
+session.stream_audio_pcm16(stream).await?;
+# Ok(())
+# }
+```
+
+## Typed tools (simple)
+
+```rust
+use oai_rt_rs::Realtime;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -88,17 +123,19 @@ pub struct SumResp {
     pub sum: i32,
 }
 
-realtime_tool!(SumTool: SumArgs => SumResp {
-    name: "sum",
-    description: "Add two integers.",
-    |args: SumArgs| async move {
+# async fn demo() -> oai_rt_rs::Result<()> {
+let _session = Realtime::builder()
+    .api_key("your-api-key")
+    .model("gpt-realtime")
+    .voice_session()
+    .tool_desc("sum", "Add two integers.", |args: SumArgs| async move {
         Ok(SumResp { sum: args.a + args.b })
-    }
-});
-
-# fn demo() {
-let mut registry = ToolRegistry::new();
-registry.register(SumTool);
+    })
+    .connect_ws()
+    .await?;
+# // By default, tool success triggers an automatic response.create.
+# // Disable with Realtime::builder().auto_tool_response(false).
+# Ok(())
 # }
 ```
 

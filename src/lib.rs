@@ -9,7 +9,8 @@ pub mod sdk;
 
 pub use error::{Error, Result};
 pub use sdk::{
-    EventStream, Realtime, RealtimeBuilder, ResponseBuilder, SdkEvent, VoiceEvent, VoiceEventStream, VoiceSessionBuilder,
+    AudioChunk, EventStream, Realtime, RealtimeBuilder, ResponseBuilder, SdkEvent, TranscriptChunk,
+    VoiceEvent, VoiceEventStream, VoiceSessionBuilder, AudioIn,
     Session as RealtimeSession, SessionHandle, ToolCall, ToolRegistry, ToolResult, ToolSpec, ToolFuture,
 };
 pub use protocol::client_events::ClientEvent;

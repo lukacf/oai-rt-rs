@@ -39,6 +39,25 @@ pub enum VoiceEvent {
     DecodeError { message: String },
 }
 
+#[derive(Debug, Clone)]
+pub struct AudioChunk {
+    pub response_id: String,
+    pub item_id: String,
+    pub output_index: u32,
+    pub content_index: u32,
+    pub pcm: Vec<u8>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TranscriptChunk {
+    pub response_id: String,
+    pub item_id: String,
+    pub output_index: u32,
+    pub content_index: u32,
+    pub text: String,
+    pub is_final: bool,
+}
+
 pub struct VoiceEventStream<'a> {
     rx: &'a mut mpsc::Receiver<VoiceEvent>,
 }

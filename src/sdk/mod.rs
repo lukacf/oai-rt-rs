@@ -17,5 +17,6 @@ pub use events::{EventStream, SdkEvent};
 pub use handlers::{EventHandlers, RawEventHandler, TextHandler, ToolCallHandler};
 pub use response::ResponseBuilder;
 pub use session::{Session, SessionHandle};
-pub use voice::{VoiceEvent, VoiceEventStream};
+pub use session::AudioIn;
+pub use voice::{AudioChunk, TranscriptChunk, VoiceEvent, VoiceEventStream};
 pub use tools::{BoxFuture as ToolFuture, ToolCall, ToolDefinition, ToolRegistry, ToolResult, ToolSpec};
