@@ -62,7 +62,7 @@ sender.send(event).await?;
 
 ## Protocol Reference
 
-Reference documentation in `partialdocs.md` and `OPENAI_REALTIME_SPEC.md` for:
+See the [OpenAI Realtime API documentation](https://platform.openai.com/docs/guides/realtime) for:
 - Full event catalog and examples
 - Session lifecycle and mutability rules
 - Audio input/output pipelines
