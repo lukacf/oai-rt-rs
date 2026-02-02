@@ -38,8 +38,6 @@ allow = [
     "Unicode-3.0",
 ]
 
-deny = []
-
 [[licenses.clarify]]
 name = "ring"
 expression = "MIT AND ISC AND OpenSSL"
@@ -53,7 +51,6 @@ multiple-versions = "warn"
 wildcards = "allow"
 skip = []
 skip-tree = []
-deny = []
 
 # ============================================================================
 # Sources - Restrict where crates can come from
