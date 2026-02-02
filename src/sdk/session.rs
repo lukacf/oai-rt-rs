@@ -1096,7 +1096,41 @@ mod tests {
 
         let voice = session.next_voice_event().await.unwrap().expect("voice event");
         match voice {
-            VoiceEvent::AudioDelta { pcm: decoded, .. } => assert_eq!(decoded, pcm),
+            VoiceEvent::AudioDelta { response_id, pcm: decoded, .. } => {
+                assert_eq!(response_id, "resp_1");
+                assert_eq!(decoded, pcm);
+            }
+            other => panic!("unexpected voice event: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn voice_event_audio_done_propagates_response_id() {
+        let (event_tx, event_rx) = mpsc::channel(8);
+        let (out_tx, _out_rx) = mpsc::channel(8);
+        let transport = Box::new(MockTransport { incoming: event_rx, outgoing: out_tx });
+
+        let tools = ToolRegistry::new();
+        let mut session = Session::from_transport(transport, EventHandlers::new(), tools, false, true);
+
+        let evt = ServerEvent::ResponseOutputAudioDone {
+            event_id: "evt_2".to_string(),
+            response_id: "resp_42".to_string(),
+            item_id: "item_2".to_string(),
+            output_index: 1,
+            content_index: 0,
+            item: None,
+        };
+        event_tx.send(evt).await.unwrap();
+
+        let voice = session.next_voice_event().await.unwrap().expect("voice event");
+        match voice {
+            VoiceEvent::AudioDone { response_id, item_id, output_index, content_index } => {
+                assert_eq!(response_id, "resp_42");
+                assert_eq!(item_id, "item_2");
+                assert_eq!(output_index, 1);
+                assert_eq!(content_index, 0);
+            }
             other => panic!("unexpected voice event: {other:?}"),
         }
     }
