@@ -1,6 +1,6 @@
+use crate::Result;
 use crate::protocol::client_events::ClientEvent;
 use crate::protocol::server_events::ServerEvent;
-use crate::Result;
 use std::future::Future;
 use std::pin::Pin;
 

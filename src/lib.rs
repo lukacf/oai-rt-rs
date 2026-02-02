@@ -2,36 +2,36 @@
 #![allow(clippy::module_name_repetitions)]
 #![allow(clippy::multiple_crate_versions)]
 
-pub mod protocol;
-pub mod transport;
 pub mod error;
+pub mod protocol;
 pub mod sdk;
+pub mod transport;
 
 pub use error::{Error, Result};
-pub use sdk::{
-    AudioChunk, EventStream, Realtime, RealtimeBuilder, ResponseBuilder, SdkEvent, TranscriptChunk,
-    VoiceEvent, VoiceEventStream, VoiceSessionBuilder, AudioIn,
-    Session as RealtimeSession, SessionHandle, ToolCall, ToolRegistry, ToolResult, ToolSpec, ToolFuture,
-};
 pub use protocol::client_events::ClientEvent;
-pub use protocol::server_events::ServerEvent;
 pub use protocol::models::{
     ApprovalFilter, ApprovalMode, AudioConfig, AudioFormat, CachedTokenDetails, ContentPart,
-    ConversationMode, Eagerness, Infinite, InputAudioConfig, InputAudioTranscription,
-    InputItem, InputTokenDetails, Item, ItemStatus, MaxTokens, McpError, McpToolConfig, McpToolInfo,
-    Modality, NoiseReduction, NoiseReductionType, OutputAudioConfig, OutputModalities, OutputTokenDetails,
+    ConversationMode, Eagerness, Infinite, InputAudioConfig, InputAudioTranscription, InputItem,
+    InputTokenDetails, Item, ItemStatus, MaxTokens, McpError, McpToolConfig, McpToolInfo, Modality,
+    NoiseReduction, NoiseReductionType, OutputAudioConfig, OutputModalities, OutputTokenDetails,
     PromptRef, RequireApproval, Response, ResponseConfig, ResponseStatus, RetentionRatioTruncation,
-    Role, Session, SessionConfig, SessionKind, SessionUpdate, SessionUpdateConfig, Temperature, TokenLimits,
-    Tool, ToolChoice, ToolChoiceMode, Tracing, TracingAuto, TracingConfig, Truncation, TruncationStrategy,
-    TruncationType, Usage, Voice,
+    Role, Session, SessionConfig, SessionKind, SessionUpdate, SessionUpdateConfig, Temperature,
+    TokenLimits, Tool, ToolChoice, ToolChoiceMode, Tracing, TracingAuto, TracingConfig, Truncation,
+    TruncationStrategy, TruncationType, Usage, Voice,
+};
+pub use protocol::server_events::ServerEvent;
+pub use sdk::{
+    AudioChunk, AudioIn, EventStream, Realtime, RealtimeBuilder, ResponseBuilder, SdkEvent,
+    Session as RealtimeSession, SessionHandle, ToolCall, ToolFuture, ToolRegistry, ToolResult,
+    ToolSpec, TranscriptChunk, VoiceEvent, VoiceEventStream, VoiceSessionBuilder,
 };
 
+use crate::protocol::models;
 use futures::stream::BoxStream;
 use futures::{SinkExt, StreamExt};
 use serde_json::from_str;
 use tokio_tungstenite::tungstenite::protocol::Message;
 use transport::ws::WsStream;
-use crate::protocol::models;
 
 const TRACE_LOG_MAX_BYTES: usize = 1024;
 const MAX_INPUT_AUDIO_CHUNK_BYTES: usize = 15 * 1024 * 1024;
@@ -51,11 +51,14 @@ impl RealtimeClient {
     ///
     /// # Errors
     /// Returns an error if the connection fails or if the URL is invalid.
-    pub async fn connect(api_key: &str, model: Option<&str>, call_id: Option<&str>) -> Result<Self> {
+    pub async fn connect(
+        api_key: &str,
+        model: Option<&str>,
+        call_id: Option<&str>,
+    ) -> Result<Self> {
         let stream = transport::ws::connect(api_key, model, call_id).await?;
         Ok(Self { stream })
     }
-
 
     /// Send a client event to the server.
     ///
@@ -64,7 +67,10 @@ impl RealtimeClient {
     pub async fn send(&mut self, event: ClientEvent) -> Result<()> {
         validate_client_event(&event)?;
         let json = serde_json::to_string(&event)?;
-        tracing::trace!("Sending event: {}", safe_truncate(&json, TRACE_LOG_MAX_BYTES));
+        tracing::trace!(
+            "Sending event: {}",
+            safe_truncate(&json, TRACE_LOG_MAX_BYTES)
+        );
         self.stream.send(Message::Text(json.into())).await?;
         Ok(())
     }
@@ -77,7 +83,10 @@ impl RealtimeClient {
         while let Some(msg) = self.stream.next().await {
             match msg? {
                 Message::Text(text) => {
-                    tracing::trace!("Received event: {}", safe_truncate(&text, TRACE_LOG_MAX_BYTES));
+                    tracing::trace!(
+                        "Received event: {}",
+                        safe_truncate(&text, TRACE_LOG_MAX_BYTES)
+                    );
                     return Ok(Some(from_str::<ServerEvent>(&text)?));
                 }
                 Message::Close(_) => {
@@ -93,7 +102,7 @@ impl RealtimeClient {
         }
         Ok(None)
     }
-    
+
     /// Split the client into a sender and a receiver for concurrent usage.
     pub fn split(self) -> (RealtimeSender, RealtimeReceiver) {
         let (write, read) = self.stream.split();
@@ -141,7 +150,10 @@ impl RealtimeSender {
     pub async fn send(&mut self, event: ClientEvent) -> Result<()> {
         validate_client_event(&event)?;
         let json = serde_json::to_string(&event)?;
-        tracing::trace!("Sending event (split): {}", safe_truncate(&json, TRACE_LOG_MAX_BYTES));
+        tracing::trace!(
+            "Sending event (split): {}",
+            safe_truncate(&json, TRACE_LOG_MAX_BYTES)
+        );
         self.write.send(Message::Text(json.into())).await?;
         Ok(())
     }
@@ -161,7 +173,10 @@ fn validate_client_event(event: &ClientEvent) -> Result<()> {
         ClientEvent::SessionUpdate { session, .. } => {
             validate_session_update(session.as_ref())?;
         }
-        ClientEvent::ResponseCreate { response: Some(config), .. } => {
+        ClientEvent::ResponseCreate {
+            response: Some(config),
+            ..
+        } => {
             validate_response_config(config.as_ref())?;
         }
         _ => {}
@@ -291,15 +306,21 @@ impl RealtimeReceiver {
     /// Exposes an asynchronous stream of `Result<ServerEvent>` that preserves Errors.
     #[must_use]
     pub fn try_into_stream(self) -> BoxStream<'static, Result<ServerEvent>> {
-        self.read.map(|res| res.map_err(Error::from)).filter_map(|res| async move {
-            match res {
-                Ok(Message::Text(text)) => {
-                    tracing::trace!("Received event (stream): {}", safe_truncate(&text, TRACE_LOG_MAX_BYTES));
-                    Some(from_str::<ServerEvent>(&text).map_err(Error::from))
+        self.read
+            .map(|res| res.map_err(Error::from))
+            .filter_map(|res| async move {
+                match res {
+                    Ok(Message::Text(text)) => {
+                        tracing::trace!(
+                            "Received event (stream): {}",
+                            safe_truncate(&text, TRACE_LOG_MAX_BYTES)
+                        );
+                        Some(from_str::<ServerEvent>(&text).map_err(Error::from))
+                    }
+                    Ok(_) => None,
+                    Err(e) => Some(Err(e)),
                 }
-                Ok(_) => None,
-                Err(e) => Some(Err(e)),
-            }
-        }).boxed()
+            })
+            .boxed()
     }
 }

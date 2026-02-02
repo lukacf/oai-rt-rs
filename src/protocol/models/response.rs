@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-use super::{AudioConfig, Item, MaxTokens, Metadata, OutputModalities, Tool, ToolChoice, Temperature, Voice};
+use super::{
+    AudioConfig, Item, MaxTokens, Metadata, OutputModalities, Temperature, Tool, ToolChoice, Voice,
+};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -30,7 +32,9 @@ pub struct ResponseConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum InputItem {
-    ItemReference { id: String },
+    ItemReference {
+        id: String,
+    },
     Message {
         id: Option<String>,
         role: super::Role,

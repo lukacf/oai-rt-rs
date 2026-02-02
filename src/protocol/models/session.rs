@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use serde::ser::SerializeMap;
+use serde::{Deserialize, Serialize};
 
 use super::{
     AudioConfig, AudioFormat, InputAudioTranscription, MaxTokens, Modality, Nullable,

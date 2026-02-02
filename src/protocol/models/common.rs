@@ -177,7 +177,11 @@ pub struct TemperatureError {
 
 impl std::fmt::Display for TemperatureError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "temperature must be between 0.0 and 2.0, got {}", self.value)
+        write!(
+            f,
+            "temperature must be between 0.0 and 2.0, got {}",
+            self.value
+        )
     }
 }
 

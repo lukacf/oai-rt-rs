@@ -1,5 +1,5 @@
-use oai_rt_rs::sdk::events::SdkEvent;
 use oai_rt_rs::protocol::server_events::ServerEvent;
+use oai_rt_rs::sdk::events::SdkEvent;
 
 #[test]
 fn sdk_event_maps_text_delta() {
@@ -14,7 +14,12 @@ fn sdk_event_maps_text_delta() {
 
     let mapped = SdkEvent::from_server(evt).expect("event maps");
     match mapped {
-        SdkEvent::TextDelta { response_id, item_id, delta, .. } => {
+        SdkEvent::TextDelta {
+            response_id,
+            item_id,
+            delta,
+            ..
+        } => {
             assert_eq!(response_id, "resp_1");
             assert_eq!(item_id, "item_1");
             assert_eq!(delta, "hi");

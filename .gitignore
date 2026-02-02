@@ -1,3 +1,6 @@
 /target
 .mcp-the-force/
 *.sqlite3
+.DS_Store
+Cargo.toml.orig
+.claude/

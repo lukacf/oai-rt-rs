@@ -1,11 +1,13 @@
-use oai_rt_rs::protocol::models::{
-    AudioConfig, AudioFormat, InputAudioConfig, McpToolConfig, ResponseConfig,
-    SessionUpdateConfig, Tool,
-};
 use oai_rt_rs::Error;
+use oai_rt_rs::protocol::models::{
+    AudioConfig, AudioFormat, InputAudioConfig, McpToolConfig, ResponseConfig, SessionUpdateConfig,
+    Tool,
+};
 
 // Replicate the base64 validation logic for testing
+#[allow(clippy::result_large_err)]
 fn validate_base64_audio(s: &str) -> Result<(), Error> {
+    const MAX_BYTES: usize = 15 * 1024 * 1024;
     let bytes = s.as_bytes();
     if bytes.len() % 4 != 0 {
         return Err(Error::InvalidClientEvent(
@@ -41,7 +43,6 @@ fn validate_base64_audio(s: &str) -> Result<(), Error> {
     }
 
     let decoded_len = (bytes.len() / 4) * 3 - padding;
-    const MAX_BYTES: usize = 15 * 1024 * 1024;
     if decoded_len > MAX_BYTES {
         return Err(Error::InvalidClientEvent(format!(
             "input_audio_buffer.append exceeds 15MB ({decoded_len} bytes)"
@@ -82,7 +83,9 @@ fn base64_invalid_character_errors() {
     // Contains invalid character '!'
     let invalid = "abc!";
     let err = validate_base64_audio(invalid).unwrap_err();
-    assert!(matches!(err, Error::InvalidClientEvent(msg) if msg.contains("invalid base64 character")));
+    assert!(
+        matches!(err, Error::InvalidClientEvent(msg) if msg.contains("invalid base64 character"))
+    );
 }
 
 #[test]
@@ -90,7 +93,9 @@ fn base64_invalid_padding_placement_errors() {
     // Padding in wrong position (data after padding)
     let invalid = "ab=c";
     let err = validate_base64_audio(invalid).unwrap_err();
-    assert!(matches!(err, Error::InvalidClientEvent(msg) if msg.contains("invalid base64 padding")));
+    assert!(
+        matches!(err, Error::InvalidClientEvent(msg) if msg.contains("invalid base64 padding"))
+    );
 }
 
 #[test]
@@ -99,7 +104,7 @@ fn base64_exceeds_15mb_errors() {
     // 15MB = 15 * 1024 * 1024 = 15728640 bytes
     // Base64 encoding: 4 chars = 3 bytes decoded
     // For 15728641 bytes, we need ceil(15728641 / 3) * 4 = 20971524 chars
-    let oversized = "A".repeat(20971524);
+    let oversized = "A".repeat(20_971_524);
     let err = validate_base64_audio(&oversized).unwrap_err();
     assert!(matches!(err, Error::InvalidClientEvent(msg) if msg.contains("exceeds 15MB")));
 }
@@ -108,7 +113,7 @@ fn base64_exceeds_15mb_errors() {
 fn base64_exactly_15mb_passes() {
     // 15MB exactly = 15728640 bytes
     // For 15728640 bytes: (15728640 / 3) * 4 = 20971520 chars
-    let max_size = "A".repeat(20971520);
+    let max_size = "A".repeat(20_971_520);
     assert!(validate_base64_audio(&max_size).is_ok());
 }
 
@@ -192,7 +197,9 @@ fn mcp_tool_missing_url_and_connector_errors() {
         ..McpToolConfig::default()
     };
     let err = config.validate().unwrap_err();
-    assert!(matches!(err, Error::InvalidClientEvent(msg) if msg.contains("server_url or connector_id")));
+    assert!(
+        matches!(err, Error::InvalidClientEvent(msg) if msg.contains("server_url or connector_id"))
+    );
 }
 
 // =============================================================================
@@ -207,7 +214,12 @@ fn session_update_with_invalid_audio_format_errors() {
     };
 
     // Validate through AudioFormat directly since SessionUpdate validation is private
-    let err = config.input_audio_format.as_ref().unwrap().validate().unwrap_err();
+    let err = config
+        .input_audio_format
+        .as_ref()
+        .unwrap()
+        .validate()
+        .unwrap_err();
     assert!(matches!(err, Error::InvalidClientEvent(msg) if msg.contains("rate must be 24000")));
 }
 
@@ -223,7 +235,9 @@ fn session_update_with_invalid_mcp_tool_errors() {
     // Validate through McpToolConfig directly
     if let Tool::Mcp(config) = &invalid_mcp {
         let err = config.validate().unwrap_err();
-        assert!(matches!(err, Error::InvalidClientEvent(msg) if msg.contains("server_url or connector_id")));
+        assert!(
+            matches!(err, Error::InvalidClientEvent(msg) if msg.contains("server_url or connector_id"))
+        );
     }
 }
 
@@ -241,7 +255,16 @@ fn response_config_with_nested_invalid_audio_errors() {
     };
 
     // Validate through nested AudioFormat
-    let format = config.audio.as_ref().unwrap().input.as_ref().unwrap().format.as_ref().unwrap();
+    let format = config
+        .audio
+        .as_ref()
+        .unwrap()
+        .input
+        .as_ref()
+        .unwrap()
+        .format
+        .as_ref()
+        .unwrap();
     let err = format.validate().unwrap_err();
     assert!(matches!(err, Error::InvalidClientEvent(msg) if msg.contains("rate must be 24000")));
 }
@@ -260,8 +283,22 @@ fn valid_session_config_passes() {
     };
 
     // Validate all components
-    assert!(config.input_audio_format.as_ref().unwrap().validate().is_ok());
-    assert!(config.output_audio_format.as_ref().unwrap().validate().is_ok());
+    assert!(
+        config
+            .input_audio_format
+            .as_ref()
+            .unwrap()
+            .validate()
+            .is_ok()
+    );
+    assert!(
+        config
+            .output_audio_format
+            .as_ref()
+            .unwrap()
+            .validate()
+            .is_ok()
+    );
     for tool in config.tools.as_ref().unwrap() {
         if let Tool::Mcp(mcp) = tool {
             assert!(mcp.validate().is_ok());

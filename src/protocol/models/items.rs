@@ -1,5 +1,5 @@
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde::ser::SerializeStruct;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::{ArbitraryJson, AudioFormat, ItemStatus, McpError, McpToolInfo, Role};
 
@@ -132,10 +132,50 @@ enum ItemRepr {
 impl From<ItemRepr> for Item {
     fn from(repr: ItemRepr) -> Self {
         match repr {
-            ItemRepr::Message { id, status, role, content } => Self::Message { id, status, role, content },
-            ItemRepr::FunctionCall { id, status, name, call_id, arguments } => Self::FunctionCall { id, status, name, call_id, arguments },
-            ItemRepr::FunctionCallOutput { id, call_id, output } => Self::FunctionCallOutput { id, call_id, output },
-            ItemRepr::McpCall { id, status, call_id, server_label, name, arguments, approval_request_id, output, error } => Self::McpCall {
+            ItemRepr::Message {
+                id,
+                status,
+                role,
+                content,
+            } => Self::Message {
+                id,
+                status,
+                role,
+                content,
+            },
+            ItemRepr::FunctionCall {
+                id,
+                status,
+                name,
+                call_id,
+                arguments,
+            } => Self::FunctionCall {
+                id,
+                status,
+                name,
+                call_id,
+                arguments,
+            },
+            ItemRepr::FunctionCallOutput {
+                id,
+                call_id,
+                output,
+            } => Self::FunctionCallOutput {
+                id,
+                call_id,
+                output,
+            },
+            ItemRepr::McpCall {
+                id,
+                status,
+                call_id,
+                server_label,
+                name,
+                arguments,
+                approval_request_id,
+                output,
+                error,
+            } => Self::McpCall {
                 id,
                 status,
                 call_id,
@@ -146,9 +186,37 @@ impl From<ItemRepr> for Item {
                 output,
                 error,
             },
-            ItemRepr::McpListTools { id, status, server_label, tools } => Self::McpListTools { id, status, server_label, tools },
-            ItemRepr::McpApprovalRequest { id, status, server_label, name, arguments } => Self::McpApprovalRequest { id, status, server_label, name, arguments },
-            ItemRepr::McpApprovalResponse { id, status, approval_request_id, approve, reason } => Self::McpApprovalResponse {
+            ItemRepr::McpListTools {
+                id,
+                status,
+                server_label,
+                tools,
+            } => Self::McpListTools {
+                id,
+                status,
+                server_label,
+                tools,
+            },
+            ItemRepr::McpApprovalRequest {
+                id,
+                status,
+                server_label,
+                name,
+                arguments,
+            } => Self::McpApprovalRequest {
+                id,
+                status,
+                server_label,
+                name,
+                arguments,
+            },
+            ItemRepr::McpApprovalResponse {
+                id,
+                status,
+                approval_request_id,
+                approve,
+                reason,
+            } => Self::McpApprovalResponse {
                 id,
                 status,
                 approval_request_id,
@@ -167,7 +235,12 @@ impl Serialize for Item {
     {
         match self {
             Self::Unknown(value) => value.serialize(serializer),
-            Self::Message { id, status, role, content } => {
+            Self::Message {
+                id,
+                status,
+                role,
+                content,
+            } => {
                 let mut state = serializer.serialize_struct("Item", 5)?;
                 state.serialize_field("type", "message")?;
                 if let Some(value) = id {
@@ -180,7 +253,13 @@ impl Serialize for Item {
                 state.serialize_field("content", content)?;
                 state.end()
             }
-            Self::FunctionCall { id, status, name, call_id, arguments } => {
+            Self::FunctionCall {
+                id,
+                status,
+                name,
+                call_id,
+                arguments,
+            } => {
                 let mut state = serializer.serialize_struct("Item", 6)?;
                 state.serialize_field("type", "function_call")?;
                 if let Some(value) = id {
@@ -194,7 +273,11 @@ impl Serialize for Item {
                 state.serialize_field("arguments", arguments)?;
                 state.end()
             }
-            Self::FunctionCallOutput { id, call_id, output } => {
+            Self::FunctionCallOutput {
+                id,
+                call_id,
+                output,
+            } => {
                 let mut state = serializer.serialize_struct("Item", 4)?;
                 state.serialize_field("type", "function_call_output")?;
                 if let Some(value) = id {
@@ -204,7 +287,17 @@ impl Serialize for Item {
                 state.serialize_field("output", output)?;
                 state.end()
             }
-            Self::McpCall { id, status, call_id, server_label, name, arguments, approval_request_id, output, error } => {
+            Self::McpCall {
+                id,
+                status,
+                call_id,
+                server_label,
+                name,
+                arguments,
+                approval_request_id,
+                output,
+                error,
+            } => {
                 let mut state = serializer.serialize_struct("Item", 9)?;
                 state.serialize_field("type", "mcp_call")?;
                 if let Some(value) = id {
@@ -228,7 +321,12 @@ impl Serialize for Item {
                 }
                 state.end()
             }
-            Self::McpListTools { id, status, server_label, tools } => {
+            Self::McpListTools {
+                id,
+                status,
+                server_label,
+                tools,
+            } => {
                 let mut state = serializer.serialize_struct("Item", 5)?;
                 state.serialize_field("type", "mcp_list_tools")?;
                 if let Some(value) = id {
@@ -243,7 +341,13 @@ impl Serialize for Item {
                 }
                 state.end()
             }
-            Self::McpApprovalRequest { id, status, server_label, name, arguments } => {
+            Self::McpApprovalRequest {
+                id,
+                status,
+                server_label,
+                name,
+                arguments,
+            } => {
                 let mut state = serializer.serialize_struct("Item", 6)?;
                 state.serialize_field("type", "mcp_approval_request")?;
                 if let Some(value) = id {
@@ -257,7 +361,13 @@ impl Serialize for Item {
                 state.serialize_field("arguments", arguments)?;
                 state.end()
             }
-            Self::McpApprovalResponse { id, status, approval_request_id, approve, reason } => {
+            Self::McpApprovalResponse {
+                id,
+                status,
+                approval_request_id,
+                approve,
+                reason,
+            } => {
                 let mut state = serializer.serialize_struct("Item", 6)?;
                 state.serialize_field("type", "mcp_approval_response")?;
                 if let Some(value) = id {
@@ -304,7 +414,9 @@ pub enum AudioPartFormat {
 /// strong typing for known parts.
 #[derive(Debug, Clone)]
 pub enum ContentPart {
-    InputText { text: String },
+    InputText {
+        text: String,
+    },
     InputAudio {
         audio: String,
         transcript: Option<String>,
@@ -314,13 +426,17 @@ pub enum ContentPart {
         image_url: String,
         detail: Option<String>,
     },
-    OutputText { text: String },
+    OutputText {
+        text: String,
+    },
     OutputAudio {
         audio: Option<String>,
         transcript: Option<String>,
         format: Option<AudioFormat>,
     },
-    Text { text: String },
+    Text {
+        text: String,
+    },
     Audio {
         audio: Option<String>,
         transcript: Option<String>,
@@ -386,12 +502,38 @@ impl From<ContentPartRepr> for ContentPart {
     fn from(repr: ContentPartRepr) -> Self {
         match repr {
             ContentPartRepr::InputText { text } => Self::InputText { text },
-            ContentPartRepr::InputAudio { audio, transcript, format } => Self::InputAudio { audio, transcript, format },
-            ContentPartRepr::InputImage { image_url, detail } => Self::InputImage { image_url, detail },
+            ContentPartRepr::InputAudio {
+                audio,
+                transcript,
+                format,
+            } => Self::InputAudio {
+                audio,
+                transcript,
+                format,
+            },
+            ContentPartRepr::InputImage { image_url, detail } => {
+                Self::InputImage { image_url, detail }
+            }
             ContentPartRepr::OutputText { text } => Self::OutputText { text },
-            ContentPartRepr::OutputAudio { audio, transcript, format } => Self::OutputAudio { audio, transcript, format },
+            ContentPartRepr::OutputAudio {
+                audio,
+                transcript,
+                format,
+            } => Self::OutputAudio {
+                audio,
+                transcript,
+                format,
+            },
             ContentPartRepr::Text { text } => Self::Text { text },
-            ContentPartRepr::Audio { audio, transcript, format } => Self::Audio { audio, transcript, format },
+            ContentPartRepr::Audio {
+                audio,
+                transcript,
+                format,
+            } => Self::Audio {
+                audio,
+                transcript,
+                format,
+            },
         }
     }
 }
@@ -409,7 +551,11 @@ impl Serialize for ContentPart {
                 state.serialize_field("text", text)?;
                 state.end()
             }
-            Self::InputAudio { audio, transcript, format } => {
+            Self::InputAudio {
+                audio,
+                transcript,
+                format,
+            } => {
                 let mut state = serializer.serialize_struct("ContentPart", 4)?;
                 state.serialize_field("type", "input_audio")?;
                 state.serialize_field("audio", audio)?;
@@ -436,7 +582,11 @@ impl Serialize for ContentPart {
                 state.serialize_field("text", text)?;
                 state.end()
             }
-            Self::OutputAudio { audio, transcript, format } => {
+            Self::OutputAudio {
+                audio,
+                transcript,
+                format,
+            } => {
                 let mut state = serializer.serialize_struct("ContentPart", 4)?;
                 state.serialize_field("type", "output_audio")?;
                 if let Some(value) = audio {
@@ -456,7 +606,11 @@ impl Serialize for ContentPart {
                 state.serialize_field("text", text)?;
                 state.end()
             }
-            Self::Audio { audio, transcript, format } => {
+            Self::Audio {
+                audio,
+                transcript,
+                format,
+            } => {
                 let mut state = serializer.serialize_struct("ContentPart", 4)?;
                 state.serialize_field("type", "audio")?;
                 if let Some(value) = audio {

@@ -1,11 +1,9 @@
-use reqwest::header::HeaderValue;
-use tokio::net::TcpStream;
-use tokio_tungstenite::{
-    connect_async, MaybeTlsStream, WebSocketStream,
-};
-use url::Url;
 use crate::error::Result;
 use crate::protocol::models::DEFAULT_MODEL;
+use reqwest::header::HeaderValue;
+use tokio::net::TcpStream;
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
+use url::Url;
 
 #[derive(Debug)]
 pub struct WsStream(WebSocketStream<MaybeTlsStream<TcpStream>>);
@@ -74,7 +72,7 @@ pub async fn connect(
     call_id: Option<&str>,
 ) -> Result<WsStream> {
     let mut url = Url::parse(WS_BASE_URL)?;
-    
+
     {
         let mut query = url.query_pairs_mut();
         if let Some(cid) = call_id {

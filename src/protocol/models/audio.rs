@@ -6,7 +6,10 @@ use super::{Eagerness, Nullable, Voice};
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AudioFormat {
     #[serde(rename = "audio/pcm")]
-    Pcm { #[serde(default = "default_pcm_rate")] rate: u32 },
+    Pcm {
+        #[serde(default = "default_pcm_rate")]
+        rate: u32,
+    },
     #[serde(rename = "audio/pcmu")]
     Pcmu,
     #[serde(rename = "audio/pcma")]
@@ -32,7 +35,9 @@ const fn default_pcm_rate() -> u32 {
 impl AudioFormat {
     #[must_use]
     pub const fn pcm_24khz() -> Self {
-        Self::Pcm { rate: PCM_24KHZ_RATE }
+        Self::Pcm {
+            rate: PCM_24KHZ_RATE,
+        }
     }
 
     /// # Errors
@@ -40,9 +45,11 @@ impl AudioFormat {
     #[allow(clippy::result_large_err)]
     pub fn validate(&self) -> Result<(), crate::error::Error> {
         match self {
-            Self::Pcm { rate } if *rate != PCM_24KHZ_RATE => Err(crate::error::Error::InvalidClientEvent(
-                format!("audio/pcm rate must be {PCM_24KHZ_RATE}, got {rate}"),
-            )),
+            Self::Pcm { rate } if *rate != PCM_24KHZ_RATE => {
+                Err(crate::error::Error::InvalidClientEvent(format!(
+                    "audio/pcm rate must be {PCM_24KHZ_RATE}, got {rate}"
+                )))
+            }
             _ => Ok(()),
         }
     }

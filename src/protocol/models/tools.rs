@@ -98,9 +98,17 @@ pub struct McpToolInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum McpError {
-    Protocol { code: i32, message: String },
-    ToolExecution { message: String },
-    Http { code: i32, message: String },
+    Protocol {
+        code: i32,
+        message: String,
+    },
+    ToolExecution {
+        message: String,
+    },
+    Http {
+        code: i32,
+        message: String,
+    },
     #[serde(other)]
     Unknown,
 }

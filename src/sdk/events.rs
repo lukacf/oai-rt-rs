@@ -1,6 +1,6 @@
-use crate::protocol::server_events::ServerEvent;
-use crate::protocol::models::{ContentPart, Item, Usage};
 use crate::error::ServerError;
+use crate::protocol::models::{ContentPart, Item, Usage};
+use crate::protocol::server_events::ServerEvent;
 use futures::Stream;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -103,7 +103,7 @@ pub struct EventStream<'a> {
 
 impl<'a> EventStream<'a> {
     #[must_use]
-    pub fn new(rx: &'a mut mpsc::Receiver<SdkEvent>) -> Self {
+    pub const fn new(rx: &'a mut mpsc::Receiver<SdkEvent>) -> Self {
         Self { rx }
     }
 }
@@ -337,7 +337,9 @@ fn map_transcription_ref(event: &ServerEvent) -> Option<SdkEvent> {
 
 fn map_error_ref(event: &ServerEvent) -> Option<SdkEvent> {
     match event {
-        ServerEvent::Error { event_id, error } => Some(error_event(event_id.clone(), error.clone())),
+        ServerEvent::Error { event_id, error } => {
+            Some(error_event(event_id.clone(), error.clone()))
+        }
         _ => None,
     }
 }

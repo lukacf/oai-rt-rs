@@ -1,8 +1,8 @@
+use crate::transport::ws::WsStream;
+use futures::stream::ReuniteError;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio_tungstenite::tungstenite::protocol::Message;
-use futures::stream::ReuniteError;
-use crate::transport::ws::WsStream;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]

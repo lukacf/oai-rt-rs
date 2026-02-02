@@ -1,6 +1,10 @@
-use reqwest::{Client, multipart, header::{HeaderValue, AUTHORIZATION, LOCATION}};
-use crate::protocol::models::{Session, SessionConfig, SessionKind};
 use crate::error::Result;
+use crate::protocol::models::{Session, SessionConfig, SessionKind};
+use reqwest::{
+    Client,
+    header::{AUTHORIZATION, HeaderValue, LOCATION},
+    multipart,
+};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
@@ -100,10 +104,14 @@ impl RealtimeRestAdapter {
             ));
         }
 
-        let res = self.client
+        let res = self
+            .client
             .post(format!("{BASE_URL}/client_secrets"))
             .header(AUTHORIZATION, &self.auth_header)
-            .json(&CreateClientSecretRequest { session, expires_after })
+            .json(&CreateClientSecretRequest {
+                session,
+                expires_after,
+            })
             .send()
             .await?
             .error_for_status()?;
@@ -115,10 +123,7 @@ impl RealtimeRestAdapter {
     ///
     /// # Errors
     /// Returns an error if the HTTP request fails.
-    pub async fn post_sdp_offer_raw(
-        &self,
-        sdp_offer: String,
-    ) -> Result<String> {
+    pub async fn post_sdp_offer_raw(&self, sdp_offer: String) -> Result<String> {
         Ok(self.post_sdp_offer_raw_with_call_id(sdp_offer).await?.sdp)
     }
 
@@ -132,7 +137,8 @@ impl RealtimeRestAdapter {
     ) -> Result<CallCreationResponse> {
         let url = format!("{BASE_URL}/calls");
 
-        let res = self.client
+        let res = self
+            .client
             .post(url)
             .header(AUTHORIZATION, &self.auth_header)
             .header("Content-Type", "application/sdp")
@@ -142,7 +148,10 @@ impl RealtimeRestAdapter {
             .error_for_status()?;
 
         let call_id = res.headers().get(LOCATION).and_then(extract_call_id);
-        Ok(CallCreationResponse { sdp: res.text().await?, call_id })
+        Ok(CallCreationResponse {
+            sdp: res.text().await?,
+            call_id,
+        })
     }
 
     /// Post an SDP offer to initiate a WebRTC call (Unified - Multipart).
@@ -154,7 +163,10 @@ impl RealtimeRestAdapter {
         sdp_offer: String,
         session: Option<SessionConfig>,
     ) -> Result<String> {
-        Ok(self.post_sdp_offer_multipart_with_call_id(sdp_offer, session).await?.sdp)
+        Ok(self
+            .post_sdp_offer_multipart_with_call_id(sdp_offer, session)
+            .await?
+            .sdp)
     }
 
     /// Post an SDP offer to initiate a WebRTC call (Unified - Multipart) and return `call_id`.
@@ -180,7 +192,8 @@ impl RealtimeRestAdapter {
             form = form.part("session", session_part);
         }
 
-        let res = self.client
+        let res = self
+            .client
             .post(url)
             .header(AUTHORIZATION, &self.auth_header)
             .multipart(form)
@@ -189,7 +202,10 @@ impl RealtimeRestAdapter {
             .error_for_status()?;
 
         let call_id = res.headers().get(LOCATION).and_then(extract_call_id);
-        Ok(CallCreationResponse { sdp: res.text().await?, call_id })
+        Ok(CallCreationResponse {
+            sdp: res.text().await?,
+            call_id,
+        })
     }
 
     /// Accept an incoming SIP call.
@@ -205,7 +221,8 @@ impl RealtimeRestAdapter {
             ));
         }
 
-        self.client.post(&url)
+        self.client
+            .post(&url)
             .header(AUTHORIZATION, &self.auth_header)
             .json(&session)
             .send()
@@ -220,7 +237,8 @@ impl RealtimeRestAdapter {
     /// Returns an error if the HTTP request fails.
     pub async fn sip_reject(&self, call_id: &str) -> Result<()> {
         let url = format!("{BASE_URL}/calls/{call_id}/reject");
-        self.client.post(&url)
+        self.client
+            .post(&url)
             .header(AUTHORIZATION, &self.auth_header)
             .send()
             .await?
@@ -234,7 +252,8 @@ impl RealtimeRestAdapter {
     /// Returns an error if the HTTP request fails.
     pub async fn hangup(&self, call_id: &str) -> Result<()> {
         let url = format!("{BASE_URL}/calls/{call_id}/hangup");
-        self.client.post(&url)
+        self.client
+            .post(&url)
             .header(AUTHORIZATION, &self.auth_header)
             .send()
             .await?
@@ -248,9 +267,12 @@ impl RealtimeRestAdapter {
     /// Returns an error if the HTTP request fails.
     pub async fn sip_refer(&self, call_id: &str, target_uri: impl Into<String>) -> Result<()> {
         let url = format!("{BASE_URL}/calls/{call_id}/refer");
-        let body = SipReferRequest { target_uri: target_uri.into() };
-        
-        self.client.post(&url)
+        let body = SipReferRequest {
+            target_uri: target_uri.into(),
+        };
+
+        self.client
+            .post(&url)
             .header(AUTHORIZATION, &self.auth_header)
             .json(&body)
             .send()
@@ -273,7 +295,8 @@ struct SipReferRequest {
 
 fn extract_call_id(location: &HeaderValue) -> Option<String> {
     let value = location.to_str().ok()?;
-    value.rsplit('/')
+    value
+        .rsplit('/')
         .find(|segment| !segment.is_empty())
         .map(str::to_owned)
 }

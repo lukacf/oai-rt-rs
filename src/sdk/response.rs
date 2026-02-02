@@ -1,9 +1,11 @@
-use crate::protocol::models::{ContentPart, InputItem, OutputModalities, ResponseConfig, Role, ToolChoice};
-use crate::protocol::models::{MaxTokens, Metadata, Temperature, Voice};
 use crate::Result;
+use crate::protocol::models::{
+    ContentPart, InputItem, OutputModalities, ResponseConfig, Role, ToolChoice,
+};
+use crate::protocol::models::{MaxTokens, Metadata, Temperature, Voice};
 
-use super::ToolRegistry;
 use super::Session;
+use super::ToolRegistry;
 
 pub struct ResponseBuilder {
     config: ResponseConfig,

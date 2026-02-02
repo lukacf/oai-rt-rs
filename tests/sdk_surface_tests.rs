@@ -1,5 +1,5 @@
-use oai_rt_rs::sdk::{Realtime, ToolRegistry};
 use oai_rt_rs::realtime_tool;
+use oai_rt_rs::sdk::{Realtime, ToolRegistry};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 

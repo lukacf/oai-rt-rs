@@ -5,8 +5,8 @@ use crate::protocol::models::{
 };
 use crate::{Error, Result};
 
-use super::{EventHandlers, ToolRegistry};
 use super::session::SessionConfigSnapshot;
+use super::{EventHandlers, ToolRegistry};
 
 pub struct Realtime;
 
@@ -231,10 +231,14 @@ impl RealtimeBuilder {
 
     #[allow(clippy::result_large_err)]
     fn build(self) -> Result<SessionConfigSnapshot> {
-        let api_key = self.api_key.ok_or_else(|| Error::InvalidClientEvent("api_key required".to_string()))?;
+        let api_key = self
+            .api_key
+            .ok_or_else(|| Error::InvalidClientEvent("api_key required".to_string()))?;
         let model = self.model.clone();
         let output_modalities = self.output_modalities.unwrap_or(OutputModalities::Audio);
-        let model_name = self.model.unwrap_or_else(|| crate::protocol::models::DEFAULT_MODEL.to_string());
+        let model_name = self
+            .model
+            .unwrap_or_else(|| crate::protocol::models::DEFAULT_MODEL.to_string());
 
         let mut session = SessionConfig::new(SessionKind::Realtime, model_name, output_modalities);
         if let Some(voice) = self.voice {
@@ -286,14 +290,16 @@ impl VoiceSessionBuilder {
     fn new(mut inner: RealtimeBuilder) -> Self {
         let input = InputAudioConfig {
             format: Some(AudioFormat::pcm_24khz()),
-            turn_detection: Some(crate::protocol::models::Nullable::Value(TurnDetection::ServerVad {
-                threshold: None,
-                prefix_padding_ms: None,
-                silence_duration_ms: None,
-                idle_timeout_ms: None,
-                create_response: Some(true),
-                interrupt_response: Some(true),
-            })),
+            turn_detection: Some(crate::protocol::models::Nullable::Value(
+                TurnDetection::ServerVad {
+                    threshold: None,
+                    prefix_padding_ms: None,
+                    silence_duration_ms: None,
+                    idle_timeout_ms: None,
+                    create_response: Some(true),
+                    interrupt_response: Some(true),
+                },
+            )),
             transcription: None,
             noise_reduction: None,
         };
@@ -328,7 +334,11 @@ impl VoiceSessionBuilder {
         self.inner = self.inner.voice(voice);
         if let Some(audio) = self.inner.audio.as_mut() {
             if let Some(output) = audio.output.as_mut() {
-                output.voice = self.inner.voice.clone().map(crate::protocol::models::Voice::from);
+                output.voice = self
+                    .inner
+                    .voice
+                    .clone()
+                    .map(crate::protocol::models::Voice::from);
             }
         }
         self
@@ -341,7 +351,7 @@ impl VoiceSessionBuilder {
     }
 
     #[must_use]
-    pub fn vad_server_default(self) -> Self {
+    pub const fn vad_server_default(self) -> Self {
         let vad = TurnDetection::ServerVad {
             threshold: None,
             prefix_padding_ms: None,
@@ -354,7 +364,7 @@ impl VoiceSessionBuilder {
     }
 
     #[must_use]
-    pub fn set_turn_detection(mut self, vad: TurnDetection) -> Self {
+    pub const fn set_turn_detection(mut self, vad: TurnDetection) -> Self {
         if let Some(audio) = self.inner.audio.as_mut() {
             if let Some(input) = audio.input.as_mut() {
                 input.turn_detection = Some(crate::protocol::models::Nullable::Value(vad));
@@ -379,10 +389,11 @@ impl VoiceSessionBuilder {
     }
 
     #[must_use]
-    pub fn noise_reduction(mut self, noise_reduction: NoiseReduction) -> Self {
+    pub const fn noise_reduction(mut self, noise_reduction: NoiseReduction) -> Self {
         if let Some(audio) = self.inner.audio.as_mut() {
             if let Some(input) = audio.input.as_mut() {
-                input.noise_reduction = Some(crate::protocol::models::Nullable::Value(noise_reduction));
+                input.noise_reduction =
+                    Some(crate::protocol::models::Nullable::Value(noise_reduction));
             }
         }
         self

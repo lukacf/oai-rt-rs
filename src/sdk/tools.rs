@@ -1,14 +1,14 @@
 use crate::Result;
 use crate::protocol::models::{McpToolConfig, Tool};
-use schemars::schema::RootSchema;
-use std::sync::Arc;
 use schemars::JsonSchema;
-use serde::de::DeserializeOwned;
+use schemars::schema::RootSchema;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 
 pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 
@@ -69,7 +69,11 @@ impl ToolRegistry {
     {
         let schema = schemars::schema_for!(TArgs);
         let name = name.to_string();
-        let entry = ToolDefinition { name: name.clone(), description: None, schema };
+        let entry = ToolDefinition {
+            name: name.clone(),
+            description: None,
+            schema,
+        };
         self.defs.push(entry);
 
         let user_handler = Arc::new(handler);
@@ -92,8 +96,7 @@ impl ToolRegistry {
         name: &str,
         description: impl Into<String>,
         handler: F,
-    )
-    where
+    ) where
         TArgs: DeserializeOwned + JsonSchema + Send + 'static,
         TResp: Serialize + Send + 'static,
         F: Fn(TArgs) -> Fut + Send + Sync + 'static,
@@ -107,8 +110,7 @@ impl ToolRegistry {
         name: &str,
         description: impl Into<String>,
         handler: F,
-    )
-    where
+    ) where
         TArgs: DeserializeOwned + JsonSchema + Send + 'static,
         TResp: Serialize + Send + 'static,
         F: Fn(TArgs) -> Fut + Send + Sync + 'static,
@@ -206,7 +208,10 @@ impl ToolRegistry {
             crate::Error::InvalidClientEvent(format!("unknown tool: {}", call.name))
         })?;
         let output = handler(call.arguments).await?;
-        Ok(ToolResult { call_id: call.call_id, output })
+        Ok(ToolResult {
+            call_id: call.call_id,
+            output,
+        })
     }
 }
 

@@ -1,11 +1,14 @@
 [package]
 name = "oai-rt-rs"
 version = "0.1.0"
-edition = "2021"
-rust-version = "1.79.0"
-description = "A high-performance, strictly-typed, and production-ready Rust client for the OpenAI Realtime API."
+edition = "2024"
+rust-version = "1.85.0"
+authors = ["Luka Crnkovic-Friis"]
+description = "Rust SDK for the OpenAI Realtime API"
 license = "MIT"
 repository = "https://github.com/lukacf/oai-rt-rs"
+documentation = "https://docs.rs/oai-rt-rs"
+homepage = "https://github.com/lukacf/oai-rt-rs"
 readme = "README.md"
 keywords = ["openai", "realtime", "api", "client", "audio"]
 categories = ["api-bindings", "asynchronous"]

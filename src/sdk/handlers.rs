@@ -1,12 +1,13 @@
-use crate::protocol::server_events::ServerEvent;
 use crate::Result;
+use crate::protocol::server_events::ServerEvent;
 use std::future::Future;
 use std::pin::Pin;
 
 pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 
 pub type TextHandler = Box<dyn Fn(String) -> BoxFuture<Result<()>> + Send + Sync>;
-pub type ToolCallHandler = Box<dyn Fn(super::ToolCall) -> BoxFuture<Result<super::ToolResult>> + Send + Sync>;
+pub type ToolCallHandler =
+    Box<dyn Fn(super::ToolCall) -> BoxFuture<Result<super::ToolResult>> + Send + Sync>;
 pub type RawEventHandler = Box<dyn Fn(ServerEvent) -> BoxFuture<Result<()>> + Send + Sync>;
 
 #[derive(Default)]

@@ -5,8 +5,12 @@ use tokio::sync::mpsc;
 
 #[derive(Debug, Clone)]
 pub enum VoiceEvent {
-    SpeechStarted { audio_start_ms: Option<u32> },
-    SpeechStopped { audio_end_ms: Option<u32> },
+    SpeechStarted {
+        audio_start_ms: Option<u32>,
+    },
+    SpeechStopped {
+        audio_end_ms: Option<u32>,
+    },
     AudioDelta {
         response_id: String,
         item_id: String,
@@ -34,9 +38,15 @@ pub enum VoiceEvent {
         content_index: u32,
         transcript: String,
     },
-    ResponseCreated { response_id: String },
-    ResponseDone { response_id: String },
-    DecodeError { message: String },
+    ResponseCreated {
+        response_id: String,
+    },
+    ResponseDone {
+        response_id: String,
+    },
+    DecodeError {
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -64,7 +74,7 @@ pub struct VoiceEventStream<'a> {
 
 impl<'a> VoiceEventStream<'a> {
     #[must_use]
-    pub fn new(rx: &'a mut mpsc::Receiver<VoiceEvent>) -> Self {
+    pub const fn new(rx: &'a mut mpsc::Receiver<VoiceEvent>) -> Self {
         Self { rx }
     }
 }
