@@ -4,9 +4,11 @@ use crate::protocol::models::{
     TurnDetection,
 };
 use crate::{Error, Result};
+use std::sync::Arc;
 
+use super::EventHandlers;
 use super::session::SessionConfigSnapshot;
-use super::{EventHandlers, ToolRegistry};
+use super::tools::{ToolDispatcher, ToolRegistry};
 
 pub struct Realtime;
 
@@ -39,6 +41,7 @@ pub struct RealtimeBuilder {
     auto_tool_response: bool,
     handlers: EventHandlers,
     tools: ToolRegistry,
+    dispatcher: Option<Arc<dyn ToolDispatcher>>,
 }
 
 impl RealtimeBuilder {
@@ -58,6 +61,7 @@ impl RealtimeBuilder {
             auto_tool_response: true,
             handlers: EventHandlers::new(),
             tools: ToolRegistry::new(),
+            dispatcher: None,
         }
     }
 
@@ -112,6 +116,12 @@ impl RealtimeBuilder {
     #[must_use]
     pub const fn auto_tool_response(mut self, enabled: bool) -> Self {
         self.auto_tool_response = enabled;
+        self
+    }
+
+    #[must_use]
+    pub fn tool_dispatcher(mut self, dispatcher: Arc<dyn ToolDispatcher>) -> Self {
+        self.dispatcher = Some(dispatcher);
         self
     }
 
@@ -251,16 +261,28 @@ impl RealtimeBuilder {
         if let Some(audio) = self.audio {
             session.audio = Some(audio);
         }
-        if !self.tools.is_empty() {
-            session.tools = Some(self.tools.try_as_tools()?);
-        }
+
+        let dispatcher = if let Some(d) = self.dispatcher {
+            if session.tools.is_none() {
+                let defs = d.tool_definitions();
+                if !defs.is_empty() {
+                    session.tools = Some(defs);
+                }
+            }
+            d
+        } else {
+            if !self.tools.is_empty() {
+                session.tools = Some(self.tools.try_as_tools()?);
+            }
+            Arc::new(self.tools)
+        };
 
         Ok(SessionConfigSnapshot {
             api_key,
             model,
             session,
             handlers: self.handlers,
-            tools: self.tools,
+            dispatcher,
             auto_barge_in: self.auto_barge_in,
             auto_tool_response: self.auto_tool_response,
         })
@@ -408,6 +430,12 @@ impl VoiceSessionBuilder {
     #[must_use]
     pub const fn auto_tool_response(mut self, enabled: bool) -> Self {
         self.inner.auto_tool_response = enabled;
+        self
+    }
+
+    #[must_use]
+    pub fn tool_dispatcher(mut self, dispatcher: Arc<dyn ToolDispatcher>) -> Self {
+        self.inner.dispatcher = Some(dispatcher);
         self
     }
 

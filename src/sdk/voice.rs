@@ -38,10 +38,17 @@ pub enum VoiceEvent {
         content_index: u32,
         transcript: String,
     },
+    UserTranscriptDone {
+        item_id: String,
+        transcript: String,
+    },
     ResponseCreated {
         response_id: String,
     },
     ResponseDone {
+        response_id: String,
+    },
+    ResponseCancelled {
         response_id: String,
     },
     DecodeError {

@@ -139,6 +139,10 @@ pub enum ServerEvent {
         event_id: String,
         response: Response,
     },
+    ResponseCancelled {
+        event_id: String,
+        response: Response,
+    },
     ResponseOutputItemAdded {
         event_id: String,
         response_id: String,
@@ -407,6 +411,11 @@ enum ServerEventRepr {
     },
     #[serde(rename = "response.done")]
     ResponseDone {
+        event_id: String,
+        response: Response,
+    },
+    #[serde(rename = "response.cancelled")]
+    ResponseCancelled {
         event_id: String,
         response: Response,
     },
@@ -754,6 +763,9 @@ impl From<ServerEventRepr> for ServerEvent {
             }
             ServerEventRepr::ResponseDone { event_id, response } => {
                 Self::ResponseDone { event_id, response }
+            }
+            ServerEventRepr::ResponseCancelled { event_id, response } => {
+                Self::ResponseCancelled { event_id, response }
             }
             ServerEventRepr::ResponseOutputItemAdded {
                 event_id,
@@ -1223,6 +1235,12 @@ impl Serialize for ServerEvent {
                     event_id: event_id.clone(),
                     response: response.clone(),
                 },
+                Self::ResponseCancelled { event_id, response } => {
+                    ServerEventRepr::ResponseCancelled {
+                        event_id: event_id.clone(),
+                        response: response.clone(),
+                    }
+                }
                 Self::ResponseOutputItemAdded {
                     event_id,
                     response_id,
@@ -1527,6 +1545,7 @@ impl ServerEvent {
             McpListToolsFailed,
             ResponseCreated,
             ResponseDone,
+            ResponseCancelled,
             ResponseOutputItemAdded,
             ResponseOutputItemDone,
             ResponseContentPartAdded,
