@@ -1042,6 +1042,7 @@ impl SessionConfigSnapshot {
 fn session_update_from_config(config: &SessionConfig) -> SessionUpdate {
     SessionUpdate {
         config: SessionUpdateConfig {
+            kind: Some(config.kind),
             output_modalities: Some(config.output_modalities),
             modalities: config.modalities.clone(),
             include: config.include.clone(),

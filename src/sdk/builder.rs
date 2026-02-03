@@ -31,6 +31,7 @@ pub struct RealtimeBuilder {
     api_key: Option<String>,
     model: Option<String>,
     voice: Option<String>,
+    session_kind: SessionKind,
     output_modalities: Option<OutputModalities>,
     instructions: Option<String>,
     tool_choice: Option<ToolChoice>,
@@ -51,6 +52,7 @@ impl RealtimeBuilder {
             api_key: None,
             model: None,
             voice: None,
+            session_kind: SessionKind::Realtime,
             output_modalities: None,
             instructions: None,
             tool_choice: None,
@@ -79,7 +81,37 @@ impl RealtimeBuilder {
 
     #[must_use]
     pub fn voice(mut self, voice: impl Into<String>) -> Self {
-        self.voice = Some(voice.into());
+        let voice = voice.into();
+        self.voice = Some(voice.clone());
+        let output_voice = Some(crate::protocol::models::Voice::from(voice));
+        match self.audio.as_mut() {
+            Some(audio) => {
+                let output = audio.output.get_or_insert_with(OutputAudioConfig::default);
+                output.voice = output_voice;
+            }
+            None => {
+                self.audio = Some(AudioConfig {
+                    input: None,
+                    output: Some(OutputAudioConfig {
+                        format: None,
+                        voice: output_voice,
+                        speed: None,
+                    }),
+                });
+            }
+        }
+        self
+    }
+
+    #[must_use]
+    pub const fn session_kind(mut self, kind: SessionKind) -> Self {
+        self.session_kind = kind;
+        self
+    }
+
+    #[must_use]
+    pub const fn transcription_session(mut self) -> Self {
+        self.session_kind = SessionKind::Transcription;
         self
     }
 
@@ -250,10 +282,7 @@ impl RealtimeBuilder {
             .model
             .unwrap_or_else(|| crate::protocol::models::DEFAULT_MODEL.to_string());
 
-        let mut session = SessionConfig::new(SessionKind::Realtime, model_name, output_modalities);
-        if let Some(voice) = self.voice {
-            session.voice = Some(crate::protocol::models::Voice::from(voice));
-        }
+        let mut session = SessionConfig::new(self.session_kind, model_name, output_modalities);
         session.instructions = self.instructions;
         session.tool_choice = self.tool_choice;
         session.temperature = self.temperature;

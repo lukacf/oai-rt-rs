@@ -125,7 +125,9 @@ impl SessionConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SessionUpdateConfig {
-    /// Partial updates only; GA forbids changing `model`, `voice`, or session `type`.
+    /// Partial updates only; GA forbids changing `model` or session `type`.
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub kind: Option<SessionKind>,
     pub output_modalities: Option<OutputModalities>,
     pub modalities: Option<Vec<Modality>>,
     pub include: Option<Vec<String>>,
@@ -167,9 +169,11 @@ impl Serialize for SessionUpdate {
         S: serde::Serializer,
     {
         let mut map = serializer.serialize_map(None)?;
-        map.serialize_entry("type", "realtime")?;
         let value = serde_json::to_value(&self.config).map_err(serde::ser::Error::custom)?;
         if let serde_json::Value::Object(obj) = value {
+            if !obj.contains_key("type") {
+                map.serialize_entry("type", "realtime")?;
+            }
             for (k, v) in obj {
                 map.serialize_entry(&k, &v)?;
             }
