@@ -264,7 +264,7 @@ impl RealtimeBuilder {
 
         let dispatcher = if let Some(d) = self.dispatcher {
             if session.tools.is_none() {
-                let defs = d.tool_definitions();
+                let defs = d.try_tool_definitions()?;
                 if !defs.is_empty() {
                     session.tools = Some(defs);
                 }

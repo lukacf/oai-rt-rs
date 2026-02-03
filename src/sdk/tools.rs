@@ -18,6 +18,10 @@ type ToolHandler = Box<dyn Fn(Value) -> BoxFuture<Result<Value>> + Send + Sync>;
 pub trait ToolDispatcher: Send + Sync {
     async fn dispatch(&self, call: ToolCall) -> Result<ToolResult>;
     fn tool_definitions(&self) -> Vec<crate::protocol::models::Tool>;
+    #[allow(clippy::result_large_err)]
+    fn try_tool_definitions(&self) -> Result<Vec<crate::protocol::models::Tool>> {
+        Ok(self.tool_definitions())
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -86,7 +90,7 @@ impl ToolRegistry {
         F: Fn(TArgs) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<TResp>> + Send + 'static,
     {
-        self.tool_with_description(name, "", handler);
+        self.register_tool(name, None, handler);
     }
 
     pub fn tool_desc<TArgs, TResp, F, Fut>(
@@ -114,11 +118,25 @@ impl ToolRegistry {
         F: Fn(TArgs) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<TResp>> + Send + 'static,
     {
+        self.register_tool(name, Some(description.into()), handler);
+    }
+
+    fn register_tool<TArgs, TResp, F, Fut>(
+        &mut self,
+        name: &str,
+        description: Option<String>,
+        handler: F,
+    ) where
+        TArgs: DeserializeOwned + JsonSchema + Send + 'static,
+        TResp: Serialize + Send + 'static,
+        F: Fn(TArgs) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<TResp>> + Send + 'static,
+    {
         let schema = schemars::schema_for!(TArgs);
         let name = name.to_string();
         let entry = ToolDefinition {
             name: name.clone(),
-            description: Some(description.into()),
+            description,
             schema,
         };
         self.defs.push(entry);
@@ -206,7 +224,14 @@ impl ToolDispatcher for ToolRegistry {
     }
 
     fn tool_definitions(&self) -> Vec<crate::protocol::models::Tool> {
-        self.try_as_tools().unwrap_or_default()
+        self.try_as_tools().unwrap_or_else(|err| {
+            tracing::error!(error = %err, "failed to serialize tool definitions");
+            Vec::new()
+        })
+    }
+
+    fn try_tool_definitions(&self) -> Result<Vec<crate::protocol::models::Tool>> {
+        self.try_as_tools()
     }
 }
 
@@ -246,4 +271,46 @@ macro_rules! realtime_tool {
             }
         }
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn tool_without_description_omits_field() {
+        let mut tools = ToolRegistry::new();
+        tools.tool::<serde_json::Value, serde_json::Value, _, _>(
+            "echo",
+            |args| async move { Ok(args) },
+        );
+
+        let defs = tools.try_as_tools().unwrap();
+        assert_eq!(defs.len(), 1);
+        match &defs[0] {
+            Tool::Function { description, .. } => {
+                assert!(description.is_none());
+            }
+            other @ Tool::Mcp(_) => panic!("unexpected tool: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn tool_with_description_keeps_field() {
+        let mut tools = ToolRegistry::new();
+        tools.tool_desc::<serde_json::Value, serde_json::Value, _, _>(
+            "echo",
+            "desc",
+            |args| async move { Ok(args) },
+        );
+
+        let defs = tools.try_as_tools().unwrap();
+        assert_eq!(defs.len(), 1);
+        match &defs[0] {
+            Tool::Function { description, .. } => {
+                assert_eq!(description.as_deref(), Some("desc"));
+            }
+            other @ Tool::Mcp(_) => panic!("unexpected tool: {other:?}"),
+        }
+    }
 }

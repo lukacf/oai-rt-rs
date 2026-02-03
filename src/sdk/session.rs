@@ -416,18 +416,19 @@ impl Session {
                 };
 
                 tokio::select! {
-                    Some(cmd) = sender_rx.recv() => {
+                    cmd = sender_rx.recv() => {
                         match cmd {
-                            Command::SendWithResponse { event, respond } => {
+                            Some(Command::SendWithResponse { event, respond }) => {
                                 let _ = respond.send(transport.send(event).await);
                             }
-                            Command::RunTool { call, respond } => {
+                            Some(Command::RunTool { call, respond }) => {
                                 let res = dispatcher.dispatch(call).await;
                                 let _ = respond.send(res);
                             }
-                            Command::GetActiveResponseId { respond } => {
+                            Some(Command::GetActiveResponseId { respond }) => {
                                 let _ = respond.send(active_response_id_loop.lock().await.clone());
                             }
+                            None => break,
                         }
                     }
                     res = transport.next_event() => {
@@ -672,6 +673,7 @@ async fn handle_lifecycle_events(evt: &ServerEvent, ctx: &EventContext<'_>) {
 async fn handle_user_transcript_events(evt: &ServerEvent, ctx: &EventContext<'_>) {
     if let ServerEvent::InputAudioTranscriptionCompleted {
         item_id,
+        content_index,
         transcript,
         ..
     } = evt
@@ -680,6 +682,7 @@ async fn handle_user_transcript_events(evt: &ServerEvent, ctx: &EventContext<'_>
             .voice_tx
             .send(VoiceEvent::UserTranscriptDone {
                 item_id: item_id.clone(),
+                content_index: *content_index,
                 transcript: transcript.clone(),
             })
             .await;
@@ -1742,5 +1745,78 @@ mod tests {
         )
         .await;
         assert!(chunk.is_err());
+    }
+
+    #[tokio::test]
+    async fn session_loop_exits_when_sender_closed() {
+        let (_event_tx, event_rx) = mpsc::channel(8);
+        let (out_tx, mut out_rx) = mpsc::channel(8);
+        let transport = Box::new(MockTransport {
+            incoming: event_rx,
+            outgoing: out_tx,
+        });
+
+        let tools = ToolRegistry::new();
+        let session = Session::from_transport(
+            transport,
+            EventHandlers::new(),
+            Arc::new(tools),
+            false,
+            true,
+        );
+
+        drop(session);
+
+        let closed = tokio::time::timeout(std::time::Duration::from_secs(1), out_rx.recv())
+            .await
+            .expect("session loop did not exit");
+        assert!(closed.is_none());
+    }
+
+    #[tokio::test]
+    async fn user_transcript_event_includes_content_index() {
+        let (event_tx, event_rx) = mpsc::channel(8);
+        let (out_tx, _out_rx) = mpsc::channel(8);
+        let transport = Box::new(MockTransport {
+            incoming: event_rx,
+            outgoing: out_tx,
+        });
+
+        let tools = ToolRegistry::new();
+        let mut session = Session::from_transport(
+            transport,
+            EventHandlers::new(),
+            Arc::new(tools),
+            false,
+            true,
+        );
+
+        let evt = ServerEvent::InputAudioTranscriptionCompleted {
+            event_id: "evt_1".to_string(),
+            item_id: "item_1".to_string(),
+            content_index: 2,
+            transcript: "hello".to_string(),
+            logprobs: None,
+            usage: None,
+        };
+        event_tx.send(evt).await.unwrap();
+
+        let voice = session
+            .next_voice_event()
+            .await
+            .unwrap()
+            .expect("voice event");
+        match voice {
+            VoiceEvent::UserTranscriptDone {
+                item_id,
+                content_index,
+                transcript,
+            } => {
+                assert_eq!(item_id, "item_1");
+                assert_eq!(content_index, 2);
+                assert_eq!(transcript, "hello");
+            }
+            other => panic!("unexpected voice event: {other:?}"),
+        }
     }
 }

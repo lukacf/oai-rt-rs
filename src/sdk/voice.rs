@@ -40,6 +40,7 @@ pub enum VoiceEvent {
     },
     UserTranscriptDone {
         item_id: String,
+        content_index: u32,
         transcript: String,
     },
     ResponseCreated {
