@@ -207,6 +207,21 @@ fn validate_response_config(config: &models::ResponseConfig) -> Result<()> {
     if let Some(audio) = &config.audio {
         validate_audio_config(audio)?;
     }
+    if let Some(format) = &config.input_audio_format {
+        validate_audio_format(format)?;
+        if let Some(audio) = &config.audio {
+            if let Some(input) = &audio.input {
+                if let Some(nested) = &input.format {
+                    if nested != format {
+                        return Err(Error::InvalidClientEvent(
+                            "response.input_audio_format conflicts with response.audio.input.format"
+                                .to_string(),
+                        ));
+                    }
+                }
+            }
+        }
+    }
     if let Some(tools) = &config.tools {
         validate_tools(tools)?;
     }

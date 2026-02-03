@@ -14,11 +14,34 @@ pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 
 type ToolHandler = Box<dyn Fn(Value) -> BoxFuture<Result<Value>> + Send + Sync>;
 
+#[async_trait::async_trait]
+pub trait ToolDispatcher: Send + Sync {
+    async fn dispatch(&self, call: ToolCall) -> Result<ToolResult>;
+    fn tool_definitions(&self) -> Vec<crate::protocol::models::Tool>;
+    #[allow(clippy::result_large_err)]
+    fn try_tool_definitions(&self) -> Result<Vec<crate::protocol::models::Tool>> {
+        Ok(self.tool_definitions())
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ToolDefinition {
     pub name: String,
     pub description: Option<String>,
     pub schema: RootSchema,
+}
+
+impl ToolDefinition {
+    #[allow(clippy::result_large_err)]
+    pub(crate) fn try_as_tool(&self) -> Result<Tool> {
+        let parameters = serde_json::to_value(&self.schema)
+            .map_err(|e| crate::Error::InvalidClientEvent(e.to_string()))?;
+        Ok(Tool::Function {
+            name: self.name.clone(),
+            description: self.description.clone(),
+            parameters,
+        })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -67,28 +90,7 @@ impl ToolRegistry {
         F: Fn(TArgs) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<TResp>> + Send + 'static,
     {
-        let schema = schemars::schema_for!(TArgs);
-        let name = name.to_string();
-        let entry = ToolDefinition {
-            name: name.clone(),
-            description: None,
-            schema,
-        };
-        self.defs.push(entry);
-
-        let user_handler = Arc::new(handler);
-        let handler = move |value: Value| -> BoxFuture<Result<Value>> {
-            let user_handler = Arc::clone(&user_handler);
-            Box::pin(async move {
-                let args: TArgs = serde_json::from_value(value)
-                    .map_err(|e| crate::Error::InvalidClientEvent(e.to_string()))?;
-                let resp = user_handler(args).await?;
-                serde_json::to_value(resp)
-                    .map_err(|e| crate::Error::InvalidClientEvent(e.to_string()))
-            })
-        };
-
-        self.handlers.insert(name, Box::new(handler));
+        self.register_tool(name, None, handler);
     }
 
     pub fn tool_desc<TArgs, TResp, F, Fut>(
@@ -116,11 +118,25 @@ impl ToolRegistry {
         F: Fn(TArgs) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<TResp>> + Send + 'static,
     {
+        self.register_tool(name, Some(description.into()), handler);
+    }
+
+    fn register_tool<TArgs, TResp, F, Fut>(
+        &mut self,
+        name: &str,
+        description: Option<String>,
+        handler: F,
+    ) where
+        TArgs: DeserializeOwned + JsonSchema + Send + 'static,
+        TResp: Serialize + Send + 'static,
+        F: Fn(TArgs) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<TResp>> + Send + 'static,
+    {
         let schema = schemars::schema_for!(TArgs);
         let name = name.to_string();
         let entry = ToolDefinition {
             name: name.clone(),
-            description: Some(description.into()),
+            description,
             schema,
         };
         self.defs.push(entry);
@@ -185,25 +201,18 @@ impl ToolRegistry {
     pub fn try_as_tools(&self) -> Result<Vec<Tool>> {
         let mut tools = Vec::with_capacity(self.defs.len() + self.mcp.len());
         for def in &self.defs {
-            let parameters = serde_json::to_value(&def.schema)
-                .map_err(|e| crate::Error::InvalidClientEvent(e.to_string()))?;
-            tools.push(Tool::Function {
-                name: def.name.clone(),
-                description: def.description.clone(),
-                parameters,
-            });
+            tools.push(def.try_as_tool()?);
         }
         for mcp in &self.mcp {
             tools.push(Tool::Mcp(mcp.clone()));
         }
         Ok(tools)
     }
+}
 
-    /// Dispatch a tool call to the registered handler.
-    ///
-    /// # Errors
-    /// Returns an error if the tool is unknown or execution fails.
-    pub async fn dispatch(&self, call: ToolCall) -> Result<ToolResult> {
+#[async_trait::async_trait]
+impl ToolDispatcher for ToolRegistry {
+    async fn dispatch(&self, call: ToolCall) -> Result<ToolResult> {
         let handler = self.handlers.get(&call.name).ok_or_else(|| {
             crate::Error::InvalidClientEvent(format!("unknown tool: {}", call.name))
         })?;
@@ -212,6 +221,17 @@ impl ToolRegistry {
             call_id: call.call_id,
             output,
         })
+    }
+
+    fn tool_definitions(&self) -> Vec<crate::protocol::models::Tool> {
+        self.try_as_tools().unwrap_or_else(|err| {
+            tracing::error!(error = %err, "failed to serialize tool definitions");
+            Vec::new()
+        })
+    }
+
+    fn try_tool_definitions(&self) -> Result<Vec<crate::protocol::models::Tool>> {
+        self.try_as_tools()
     }
 }
 
@@ -251,4 +271,46 @@ macro_rules! realtime_tool {
             }
         }
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn tool_without_description_omits_field() {
+        let mut tools = ToolRegistry::new();
+        tools.tool::<serde_json::Value, serde_json::Value, _, _>(
+            "echo",
+            |args| async move { Ok(args) },
+        );
+
+        let defs = tools.try_as_tools().unwrap();
+        assert_eq!(defs.len(), 1);
+        match &defs[0] {
+            Tool::Function { description, .. } => {
+                assert!(description.is_none());
+            }
+            other @ Tool::Mcp(_) => panic!("unexpected tool: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn tool_with_description_keeps_field() {
+        let mut tools = ToolRegistry::new();
+        tools.tool_desc::<serde_json::Value, serde_json::Value, _, _>(
+            "echo",
+            "desc",
+            |args| async move { Ok(args) },
+        );
+
+        let defs = tools.try_as_tools().unwrap();
+        assert_eq!(defs.len(), 1);
+        match &defs[0] {
+            Tool::Function { description, .. } => {
+                assert_eq!(description.as_deref(), Some("desc"));
+            }
+            other @ Tool::Mcp(_) => panic!("unexpected tool: {other:?}"),
+        }
+    }
 }

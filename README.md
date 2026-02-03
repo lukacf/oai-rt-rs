@@ -9,6 +9,7 @@ A Rust client for the [OpenAI Realtime API](https://platform.openai.com/docs/gui
 ## Features
 
 - GA-aligned Realtime API protocol models (WebSocket + REST).
+- GA-only behavior: beta headers/events are not supported (e.g., `response.output_item.created`).
 - Voice-first SDK with full-duplex audio streaming, VAD, and barge-in helpers.
 - Strongly typed `ClientEvent` and `ServerEvent` enums.
 - WebRTC SDP signaling, SIP control endpoints, and call hangup (low-level REST).

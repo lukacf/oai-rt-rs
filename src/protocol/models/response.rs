@@ -19,6 +19,7 @@ pub struct ResponseConfig {
     pub metadata: Option<Metadata>,
     pub modalities: Option<Vec<super::Modality>>,
     pub output_modalities: Option<OutputModalities>,
+    pub input_audio_format: Option<super::AudioFormat>,
     pub input: Option<Vec<InputItem>>,
     pub instructions: Option<String>,
     pub audio: Option<AudioConfig>,
