@@ -30,6 +30,7 @@ use crate::protocol::models;
 use futures::stream::BoxStream;
 use futures::{SinkExt, StreamExt};
 use serde_json::from_str;
+use std::future::Future;
 use tokio_tungstenite::tungstenite::protocol::Message;
 use transport::ws::WsStream;
 
@@ -320,6 +321,7 @@ pub struct RealtimeReceiver {
 impl RealtimeReceiver {
     /// Exposes an asynchronous stream of `Result<ServerEvent>` that preserves Errors.
     #[must_use]
+    #[allow(clippy::result_large_err)]
     pub fn try_into_stream(self) -> BoxStream<'static, Result<ServerEvent>> {
         self.read
             .map(|res| res.map_err(Error::from))
@@ -337,5 +339,75 @@ impl RealtimeReceiver {
                 }
             })
             .boxed()
+    }
+}
+
+/// Forward raw server events from a stream to a handler until EOF.
+///
+/// # Errors
+/// Returns the first stream error or handler error.
+pub async fn pump_raw_event_stream<S, F, Fut>(mut stream: S, mut handler: F) -> Result<()>
+where
+    S: futures::Stream<Item = Result<ServerEvent>> + Unpin,
+    F: FnMut(ServerEvent) -> Fut,
+    Fut: Future<Output = Result<()>>,
+{
+    while let Some(event) = stream.next().await {
+        handler(event?).await?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::future::ready;
+
+    #[tokio::test]
+    async fn raw_event_pump_forwards_events_until_eof() {
+        let stream = futures::stream::iter(vec![
+            Ok(ServerEvent::InputAudioBufferCleared {
+                event_id: "evt_1".to_string(),
+            }),
+            Ok(ServerEvent::InputAudioBufferCleared {
+                event_id: "evt_2".to_string(),
+            }),
+        ]);
+        let mut event_ids = Vec::new();
+
+        pump_raw_event_stream(stream, |event| {
+            if let ServerEvent::InputAudioBufferCleared { event_id } = event {
+                event_ids.push(event_id);
+            }
+            ready(Ok(()))
+        })
+        .await
+        .expect("pump succeeds");
+
+        assert_eq!(event_ids, ["evt_1", "evt_2"]);
+    }
+
+    #[tokio::test]
+    async fn raw_event_pump_returns_first_stream_error() {
+        let stream = futures::stream::iter(vec![Err(Error::ConnectionClosed)]);
+
+        let err = pump_raw_event_stream(stream, |_| ready(Ok(())))
+            .await
+            .expect_err("stream error should be returned");
+
+        assert!(matches!(err, Error::ConnectionClosed));
+    }
+
+    #[tokio::test]
+    async fn raw_event_pump_returns_first_handler_error() {
+        let stream = futures::stream::iter(vec![Ok(ServerEvent::InputAudioBufferCleared {
+            event_id: "evt_1".to_string(),
+        })]);
+
+        let err = pump_raw_event_stream(stream, |_| ready(Err(Error::ConnectionClosed)))
+            .await
+            .expect_err("handler error should be returned");
+
+        assert!(matches!(err, Error::ConnectionClosed));
     }
 }
