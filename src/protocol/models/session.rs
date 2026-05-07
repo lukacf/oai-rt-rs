@@ -128,22 +128,40 @@ pub struct SessionUpdateConfig {
     /// Partial updates only; GA forbids changing `model` or session `type`.
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub kind: Option<SessionKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub output_modalities: Option<OutputModalities>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub modalities: Option<Vec<Modality>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub include: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt: Option<PromptRef>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub truncation: Option<Truncation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub instructions: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub input_audio_format: Option<AudioFormat>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub output_audio_format: Option<AudioFormat>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub input_audio_transcription: Option<Nullable<InputAudioTranscription>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub turn_detection: Option<Nullable<TurnDetection>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<Tool>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<ToolChoice>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<Temperature>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<MaxTokens>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub audio: Option<AudioConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tracing: Option<Tracing>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub voice: Option<Voice>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

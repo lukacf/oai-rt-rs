@@ -30,6 +30,7 @@ impl Realtime {
 pub struct RealtimeBuilder {
     api_key: Option<String>,
     model: Option<String>,
+    call_id: Option<String>,
     voice: Option<String>,
     session_kind: SessionKind,
     output_modalities: Option<OutputModalities>,
@@ -40,6 +41,7 @@ pub struct RealtimeBuilder {
     audio: Option<AudioConfig>,
     auto_barge_in: bool,
     auto_tool_response: bool,
+    send_initial_session_update: bool,
     handlers: EventHandlers,
     tools: ToolRegistry,
     dispatcher: Option<Arc<dyn ToolDispatcher>>,
@@ -51,6 +53,7 @@ impl RealtimeBuilder {
         Self {
             api_key: None,
             model: None,
+            call_id: None,
             voice: None,
             session_kind: SessionKind::Realtime,
             output_modalities: None,
@@ -61,6 +64,7 @@ impl RealtimeBuilder {
             audio: None,
             auto_barge_in: false,
             auto_tool_response: true,
+            send_initial_session_update: true,
             handlers: EventHandlers::new(),
             tools: ToolRegistry::new(),
             dispatcher: None,
@@ -76,6 +80,12 @@ impl RealtimeBuilder {
     #[must_use]
     pub fn model(mut self, model: impl Into<String>) -> Self {
         self.model = Some(model.into());
+        self
+    }
+
+    #[must_use]
+    pub fn call_id(mut self, call_id: impl Into<String>) -> Self {
+        self.call_id = Some(call_id.into());
         self
     }
 
@@ -148,6 +158,14 @@ impl RealtimeBuilder {
     #[must_use]
     pub const fn auto_tool_response(mut self, enabled: bool) -> Self {
         self.auto_tool_response = enabled;
+        self
+    }
+
+    #[must_use]
+    pub const fn manual_sideband_control(mut self) -> Self {
+        self.auto_barge_in = false;
+        self.auto_tool_response = false;
+        self.send_initial_session_update = false;
         self
     }
 
@@ -276,6 +294,15 @@ impl RealtimeBuilder {
         let api_key = self
             .api_key
             .ok_or_else(|| Error::InvalidClientEvent("api_key required".to_string()))?;
+        if self
+            .call_id
+            .as_ref()
+            .is_some_and(|call_id| call_id.trim().is_empty())
+        {
+            return Err(Error::InvalidClientEvent(
+                "call_id must not be empty".to_string(),
+            ));
+        }
         let model = self.model.clone();
         let output_modalities = self.output_modalities.unwrap_or(OutputModalities::Audio);
         let model_name = self
@@ -309,11 +336,13 @@ impl RealtimeBuilder {
         Ok(SessionConfigSnapshot {
             api_key,
             model,
+            call_id: self.call_id,
             session,
             handlers: self.handlers,
             dispatcher,
             auto_barge_in: self.auto_barge_in,
             auto_tool_response: self.auto_tool_response,
+            send_initial_session_update: self.send_initial_session_update,
         })
     }
 
@@ -377,6 +406,12 @@ impl VoiceSessionBuilder {
     #[must_use]
     pub fn model(mut self, model: impl Into<String>) -> Self {
         self.inner = self.inner.model(model);
+        self
+    }
+
+    #[must_use]
+    pub fn call_id(mut self, call_id: impl Into<String>) -> Self {
+        self.inner = self.inner.call_id(call_id);
         self
     }
 
@@ -459,6 +494,12 @@ impl VoiceSessionBuilder {
     #[must_use]
     pub const fn auto_tool_response(mut self, enabled: bool) -> Self {
         self.inner.auto_tool_response = enabled;
+        self
+    }
+
+    #[must_use]
+    pub fn manual_sideband_control(mut self) -> Self {
+        self.inner = self.inner.manual_sideband_control();
         self
     }
 
@@ -556,5 +597,46 @@ impl VoiceSessionBuilder {
     /// Returns an error if configuration is incomplete or the connection fails.
     pub async fn connect_ws(self) -> Result<super::Session> {
         self.inner.connect_ws().await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn manual_sideband_control_builds_call_id_attach_without_initial_update() {
+        let snapshot = RealtimeBuilder::new()
+            .api_key("test-key")
+            .model("gpt-realtime")
+            .call_id("call_123")
+            .manual_sideband_control()
+            .build()
+            .expect("builder snapshot");
+
+        assert_eq!(snapshot.call_id.as_deref(), Some("call_123"));
+        assert!(matches!(
+            snapshot.connection_target(),
+            super::super::session::SessionConnectTarget::CallId(call_id) if call_id == "call_123"
+        ));
+        assert!(!snapshot.send_initial_session_update);
+        assert!(!snapshot.auto_barge_in);
+        assert!(!snapshot.auto_tool_response);
+    }
+
+    #[test]
+    fn empty_call_id_is_rejected() {
+        let result = RealtimeBuilder::new()
+            .api_key("test-key")
+            .call_id("   ")
+            .build();
+        let Err(err) = result else {
+            panic!("empty call_id should be rejected");
+        };
+
+        assert!(matches!(
+            err,
+            Error::InvalidClientEvent(message) if message.contains("call_id")
+        ));
     }
 }

@@ -14,19 +14,32 @@ pub enum ConversationMode {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ResponseConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub conversation: Option<ConversationMode>,
     /// Free-form metadata for the response.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Metadata>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub modalities: Option<Vec<super::Modality>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub output_modalities: Option<OutputModalities>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub input_audio_format: Option<super::AudioFormat>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub input: Option<Vec<InputItem>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub instructions: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub audio: Option<AudioConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub voice: Option<Voice>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<Temperature>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<MaxTokens>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<Tool>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<ToolChoice>,
 }
 
@@ -37,6 +50,7 @@ pub enum InputItem {
         id: String,
     },
     Message {
+        #[serde(skip_serializing_if = "Option::is_none")]
         id: Option<String>,
         role: super::Role,
         content: Vec<super::ContentPart>,

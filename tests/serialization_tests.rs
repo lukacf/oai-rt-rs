@@ -1,7 +1,9 @@
 use oai_rt_rs::protocol::client_events::ClientEvent;
 use oai_rt_rs::protocol::models::{
-    AudioFormat, ConversationMode, Infinite, InputItem, ItemStatus, MaxTokens, OutputModalities,
-    ResponseStatus, Role, Session, SessionConfig, SessionKind,
+    AudioConfig, AudioFormat, ConversationMode, Infinite, InputAudioConfig,
+    InputAudioTranscription, InputItem, ItemStatus, MaxTokens, Nullable, OutputModalities,
+    ResponseStatus, Role, Session, SessionConfig, SessionKind, SessionUpdate, SessionUpdateConfig,
+    TurnDetection,
 };
 use oai_rt_rs::protocol::server_events::ServerEvent;
 use serde_json::json;
@@ -107,6 +109,187 @@ fn test_response_create_with_input_and_metadata() {
         }
         _ => panic!("Wrong event type"),
     }
+}
+
+#[test]
+fn test_response_create_omits_none_optionals_instead_of_serializing_nulls() {
+    let event = ClientEvent::ResponseCreate {
+        event_id: None,
+        response: Some(Box::new(oai_rt_rs::protocol::models::ResponseConfig {
+            conversation: Some(ConversationMode::Auto),
+            output_modalities: Some(OutputModalities::Audio),
+            instructions: Some("Respond with audio.".to_string()),
+            ..oai_rt_rs::protocol::models::ResponseConfig::default()
+        })),
+    };
+
+    let serialized = serde_json::to_value(&event).expect("serialize response.create");
+    let response = serialized
+        .get("response")
+        .and_then(|value| value.as_object())
+        .expect("response object");
+
+    assert_eq!(
+        response
+            .get("conversation")
+            .and_then(|value| value.as_str()),
+        Some("auto")
+    );
+    assert_eq!(response.get("output_modalities"), Some(&json!(["audio"])));
+    assert_eq!(
+        response
+            .get("instructions")
+            .and_then(|value| value.as_str()),
+        Some("Respond with audio.")
+    );
+    assert!(
+        !response.contains_key("tool_choice"),
+        "response.create should omit tool_choice when it is not set"
+    );
+    assert!(
+        !response.contains_key("tools"),
+        "response.create should omit tools when they are not set"
+    );
+    assert!(
+        !response.contains_key("audio"),
+        "response.create should omit audio when it is not set"
+    );
+    assert!(
+        !response.contains_key("temperature"),
+        "response.create should omit temperature when it is not set"
+    );
+}
+
+#[test]
+fn test_session_update_omits_none_optionals_instead_of_serializing_nulls() {
+    let event = ClientEvent::SessionUpdate {
+        event_id: None,
+        session: Box::new(SessionUpdate {
+            config: SessionUpdateConfig {
+                instructions: Some("hello".to_string()),
+                output_modalities: Some(OutputModalities::Audio),
+                ..SessionUpdateConfig::default()
+            },
+        }),
+    };
+
+    let serialized = serde_json::to_value(&event).expect("serialize session.update");
+    let session = serialized
+        .get("session")
+        .and_then(|value| value.as_object())
+        .expect("session object");
+    assert_eq!(
+        session.get("instructions").and_then(|value| value.as_str()),
+        Some("hello")
+    );
+    assert_eq!(session.get("output_modalities"), Some(&json!(["audio"])));
+    assert!(
+        !session.contains_key("audio"),
+        "session.update should omit audio when it is not set"
+    );
+    assert!(
+        !session.contains_key("tools"),
+        "session.update should omit tools when they are not set"
+    );
+}
+
+#[test]
+fn test_session_update_omits_nested_audio_turn_detection_null_fields() {
+    let event = ClientEvent::SessionUpdate {
+        event_id: None,
+        session: Box::new(SessionUpdate {
+            config: SessionUpdateConfig {
+                output_modalities: Some(OutputModalities::Audio),
+                audio: Some(AudioConfig {
+                    input: Some(InputAudioConfig {
+                        format: Some(AudioFormat::pcm_24khz()),
+                        turn_detection: Some(Nullable::Value(TurnDetection::ServerVad {
+                            threshold: None,
+                            prefix_padding_ms: None,
+                            silence_duration_ms: None,
+                            idle_timeout_ms: None,
+                            create_response: Some(true),
+                            interrupt_response: Some(true),
+                        })),
+                        transcription: Some(Nullable::Value(InputAudioTranscription {
+                            model: Some("gpt-4o-mini-transcribe".to_string()),
+                            language: None,
+                            prompt: None,
+                        })),
+                        noise_reduction: None,
+                    }),
+                    output: None,
+                }),
+                ..SessionUpdateConfig::default()
+            },
+        }),
+    };
+
+    let serialized = serde_json::to_value(&event).expect("serialize nested audio session.update");
+    let turn_detection = serialized
+        .get("session")
+        .and_then(|value| value.get("audio"))
+        .and_then(|value| value.get("input"))
+        .and_then(|value| value.get("turn_detection"))
+        .and_then(|value| value.as_object())
+        .expect("turn_detection object");
+
+    assert_eq!(
+        turn_detection.get("type").and_then(|value| value.as_str()),
+        Some("server_vad")
+    );
+    assert_eq!(
+        turn_detection
+            .get("create_response")
+            .and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        turn_detection
+            .get("interrupt_response")
+            .and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
+    assert!(
+        !turn_detection.contains_key("threshold"),
+        "turn_detection.threshold should be omitted when unset"
+    );
+    assert!(
+        !turn_detection.contains_key("prefix_padding_ms"),
+        "turn_detection.prefix_padding_ms should be omitted when unset"
+    );
+    assert!(
+        !turn_detection.contains_key("silence_duration_ms"),
+        "turn_detection.silence_duration_ms should be omitted when unset"
+    );
+    assert!(
+        !turn_detection.contains_key("idle_timeout_ms"),
+        "turn_detection.idle_timeout_ms should be omitted when unset"
+    );
+}
+
+#[test]
+fn test_session_update_preserves_explicit_nullable_null() {
+    let event = ClientEvent::SessionUpdate {
+        event_id: None,
+        session: Box::new(SessionUpdate {
+            config: SessionUpdateConfig {
+                turn_detection: Some(Nullable::Null),
+                ..SessionUpdateConfig::default()
+            },
+        }),
+    };
+
+    let serialized = serde_json::to_value(&event).expect("serialize nullable null session.update");
+    let session = serialized
+        .get("session")
+        .and_then(serde_json::Value::as_object)
+        .expect("session object");
+
+    assert_eq!(
+        session.get("turn_detection"),
+        Some(&serde_json::Value::Null)
+    );
 }
 
 #[test]

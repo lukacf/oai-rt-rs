@@ -1009,23 +1009,37 @@ enum Command {
 pub struct SessionConfigSnapshot {
     pub api_key: String,
     pub model: Option<String>,
+    pub call_id: Option<String>,
     pub session: SessionConfig,
     pub handlers: EventHandlers,
     pub dispatcher: Arc<dyn ToolDispatcher>,
     pub auto_barge_in: bool,
     pub auto_tool_response: bool,
+    pub send_initial_session_update: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum SessionConnectTarget {
+    Model(String),
+    CallId(String),
 }
 
 impl SessionConfigSnapshot {
-    /// Connect via WebSocket.
-    ///
-    /// # Errors
-    /// Returns an error if the connection fails.
-    pub async fn connect_ws(self) -> Result<Session> {
-        let client =
-            crate::RealtimeClient::connect(&self.api_key, self.model.as_deref(), None).await?;
+    #[must_use]
+    pub(super) fn connection_target(&self) -> SessionConnectTarget {
+        self.call_id.clone().map_or_else(
+            || {
+                SessionConnectTarget::Model(
+                    self.model
+                        .clone()
+                        .unwrap_or_else(|| crate::protocol::models::DEFAULT_MODEL.to_string()),
+                )
+            },
+            SessionConnectTarget::CallId,
+        )
+    }
 
-        let transport = Box::new(WsTransport { client });
+    async fn connect_with_transport(self, transport: Box<dyn Transport>) -> Result<Session> {
         let session = Session::from_transport(
             transport,
             self.handlers,
@@ -1033,9 +1047,30 @@ impl SessionConfigSnapshot {
             self.auto_barge_in,
             self.auto_tool_response,
         );
-        let update = session_update_from_config(&self.session);
-        session.update_session(update).await?;
+        if self.send_initial_session_update {
+            let update = session_update_from_config(&self.session);
+            session.update_session(update).await?;
+        }
         Ok(session)
+    }
+
+    /// Connect via WebSocket.
+    ///
+    /// # Errors
+    /// Returns an error if the connection fails.
+    pub async fn connect_ws(self) -> Result<Session> {
+        let target = self.connection_target();
+        let client = match &target {
+            SessionConnectTarget::Model(model) => {
+                crate::RealtimeClient::connect(&self.api_key, Some(model.as_str()), None).await?
+            }
+            SessionConnectTarget::CallId(call_id) => {
+                crate::RealtimeClient::connect(&self.api_key, None, Some(call_id.as_str())).await?
+            }
+        };
+
+        let transport = Box::new(WsTransport { client });
+        self.connect_with_transport(transport).await
     }
 }
 
@@ -1059,6 +1094,7 @@ fn session_update_from_config(config: &SessionConfig) -> SessionUpdate {
             max_output_tokens: config.max_output_tokens.clone(),
             audio: config.audio.clone(),
             tracing: config.tracing.clone(),
+            voice: config.voice.clone(),
         },
     }
 }
@@ -1819,5 +1855,50 @@ mod tests {
             }
             other => panic!("unexpected voice event: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn manual_sideband_connect_skips_initial_session_update() {
+        let (_event_tx, event_rx) = mpsc::channel(8);
+        let (out_tx, mut out_rx) = mpsc::channel(8);
+        let transport = Box::new(MockTransport {
+            incoming: event_rx,
+            outgoing: out_tx,
+        });
+
+        let snapshot = SessionConfigSnapshot {
+            api_key: "test-key".to_string(),
+            model: Some("gpt-realtime".to_string()),
+            call_id: Some("call_123".to_string()),
+            session: SessionConfig::new(
+                crate::protocol::models::SessionKind::Realtime,
+                "gpt-realtime".to_string(),
+                crate::protocol::models::OutputModalities::Audio,
+            ),
+            handlers: EventHandlers::new(),
+            dispatcher: Arc::new(ToolRegistry::new()),
+            auto_barge_in: false,
+            auto_tool_response: false,
+            send_initial_session_update: false,
+        };
+
+        let session = snapshot
+            .connect_with_transport(transport)
+            .await
+            .expect("manual sideband session");
+
+        let initial =
+            tokio::time::timeout(std::time::Duration::from_millis(100), out_rx.recv()).await;
+        assert!(
+            initial.is_err(),
+            "manual sideband connect should not auto-send session.update"
+        );
+
+        session.respond().await.expect("manual response.create");
+        let sent = tokio::time::timeout(std::time::Duration::from_secs(1), out_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(sent, ClientEvent::ResponseCreate { .. }));
     }
 }

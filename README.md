@@ -13,6 +13,7 @@ A Rust client for the [OpenAI Realtime API](https://platform.openai.com/docs/gui
 - Voice-first SDK with full-duplex audio streaming, VAD, and barge-in helpers.
 - Strongly typed `ClientEvent` and `ServerEvent` enums.
 - WebRTC SDP signaling, SIP control endpoints, and call hangup (low-level REST).
+- Sideband WebSocket attach for existing calls via `call_id`.
 - Async interface using `tokio` and `tokio-tungstenite`.
 - Client-side validation for GA constraints (PCM 24kHz, output modalities, 15MB audio chunks).
 
@@ -171,6 +172,44 @@ async fn main() -> oai_rt_rs::Result<()> {
     }
     Ok(())
 }
+```
+
+`session.update` and `response.create` request configs serialize sparsely:
+unset `Option` fields are omitted from JSON. Fields modeled as `Nullable<T>`
+can still send an intentional `null` by using `Some(Nullable::Null)`, for
+example to disable turn detection.
+
+```rust
+use oai_rt_rs::protocol::models::{Nullable, SessionUpdate, SessionUpdateConfig};
+
+let session = SessionUpdate {
+    config: SessionUpdateConfig {
+        turn_detection: Some(Nullable::Null),
+        ..SessionUpdateConfig::default()
+    },
+};
+```
+
+## Sideband control
+
+Attach a high-level SDK session to an existing Realtime call with `call_id`.
+Manual sideband control disables automatic barge-in handling, automatic tool
+responses, and the initial SDK-generated `session.update`.
+
+```rust
+use oai_rt_rs::Realtime;
+
+# async fn demo() -> oai_rt_rs::Result<()> {
+let session = Realtime::builder()
+    .api_key("your-api-key")
+    .call_id("call_123")
+    .manual_sideband_control()
+    .connect_ws()
+    .await?;
+
+session.respond().await?;
+# Ok(())
+# }
 ```
 
 ## REST helpers (WebRTC/SIP)
