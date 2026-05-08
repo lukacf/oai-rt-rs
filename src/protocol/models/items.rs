@@ -1,7 +1,7 @@
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use super::{ArbitraryJson, AudioFormat, ItemStatus, McpError, McpToolInfo, Role};
+use super::{ArbitraryJson, AudioFormat, ItemStatus, McpError, McpToolInfo, ResponsePhase, Role};
 
 /// Manual (de)serialization preserves unknown variants as raw JSON while keeping
 /// strong typing for known items.
@@ -10,24 +10,28 @@ pub enum Item {
     Message {
         id: Option<String>,
         status: Option<ItemStatus>,
+        phase: Option<ResponsePhase>,
         role: Role,
         content: Vec<ContentPart>,
     },
     FunctionCall {
         id: Option<String>,
         status: Option<ItemStatus>,
+        phase: Option<ResponsePhase>,
         name: String,
         call_id: String,
         arguments: String,
     },
     FunctionCallOutput {
         id: Option<String>,
+        phase: Option<ResponsePhase>,
         call_id: String,
         output: String,
     },
     McpCall {
         id: Option<String>,
         status: Option<ItemStatus>,
+        phase: Option<ResponsePhase>,
         call_id: String,
         server_label: String,
         name: String,
@@ -39,12 +43,14 @@ pub enum Item {
     McpListTools {
         id: Option<String>,
         status: Option<ItemStatus>,
+        phase: Option<ResponsePhase>,
         server_label: String,
         tools: Option<Vec<McpToolInfo>>,
     },
     McpApprovalRequest {
         id: Option<String>,
         status: Option<ItemStatus>,
+        phase: Option<ResponsePhase>,
         server_label: String,
         name: String,
         arguments: String,
@@ -52,6 +58,7 @@ pub enum Item {
     McpApprovalResponse {
         id: Option<String>,
         status: Option<ItemStatus>,
+        phase: Option<ResponsePhase>,
         approval_request_id: String,
         approve: bool,
         reason: Option<String>,
@@ -81,24 +88,28 @@ enum ItemRepr {
     Message {
         id: Option<String>,
         status: Option<ItemStatus>,
+        phase: Option<ResponsePhase>,
         role: Role,
         content: Vec<ContentPart>,
     },
     FunctionCall {
         id: Option<String>,
         status: Option<ItemStatus>,
+        phase: Option<ResponsePhase>,
         name: String,
         call_id: String,
         arguments: String,
     },
     FunctionCallOutput {
         id: Option<String>,
+        phase: Option<ResponsePhase>,
         call_id: String,
         output: String,
     },
     McpCall {
         id: Option<String>,
         status: Option<ItemStatus>,
+        phase: Option<ResponsePhase>,
         call_id: String,
         server_label: String,
         name: String,
@@ -110,12 +121,14 @@ enum ItemRepr {
     McpListTools {
         id: Option<String>,
         status: Option<ItemStatus>,
+        phase: Option<ResponsePhase>,
         server_label: String,
         tools: Option<Vec<McpToolInfo>>,
     },
     McpApprovalRequest {
         id: Option<String>,
         status: Option<ItemStatus>,
+        phase: Option<ResponsePhase>,
         server_label: String,
         name: String,
         arguments: String,
@@ -123,6 +136,7 @@ enum ItemRepr {
     McpApprovalResponse {
         id: Option<String>,
         status: Option<ItemStatus>,
+        phase: Option<ResponsePhase>,
         approval_request_id: String,
         approve: bool,
         reason: Option<String>,
@@ -130,44 +144,52 @@ enum ItemRepr {
 }
 
 impl From<ItemRepr> for Item {
+    #[allow(clippy::too_many_lines)]
     fn from(repr: ItemRepr) -> Self {
         match repr {
             ItemRepr::Message {
                 id,
                 status,
+                phase,
                 role,
                 content,
             } => Self::Message {
                 id,
                 status,
+                phase,
                 role,
                 content,
             },
             ItemRepr::FunctionCall {
                 id,
                 status,
+                phase,
                 name,
                 call_id,
                 arguments,
             } => Self::FunctionCall {
                 id,
                 status,
+                phase,
                 name,
                 call_id,
                 arguments,
             },
             ItemRepr::FunctionCallOutput {
                 id,
+                phase,
                 call_id,
                 output,
             } => Self::FunctionCallOutput {
                 id,
+                phase,
                 call_id,
                 output,
             },
             ItemRepr::McpCall {
                 id,
                 status,
+                phase,
                 call_id,
                 server_label,
                 name,
@@ -178,6 +200,7 @@ impl From<ItemRepr> for Item {
             } => Self::McpCall {
                 id,
                 status,
+                phase,
                 call_id,
                 server_label,
                 name,
@@ -189,23 +212,27 @@ impl From<ItemRepr> for Item {
             ItemRepr::McpListTools {
                 id,
                 status,
+                phase,
                 server_label,
                 tools,
             } => Self::McpListTools {
                 id,
                 status,
+                phase,
                 server_label,
                 tools,
             },
             ItemRepr::McpApprovalRequest {
                 id,
                 status,
+                phase,
                 server_label,
                 name,
                 arguments,
             } => Self::McpApprovalRequest {
                 id,
                 status,
+                phase,
                 server_label,
                 name,
                 arguments,
@@ -213,12 +240,14 @@ impl From<ItemRepr> for Item {
             ItemRepr::McpApprovalResponse {
                 id,
                 status,
+                phase,
                 approval_request_id,
                 approve,
                 reason,
             } => Self::McpApprovalResponse {
                 id,
                 status,
+                phase,
                 approval_request_id,
                 approve,
                 reason,
@@ -238,6 +267,7 @@ impl Serialize for Item {
             Self::Message {
                 id,
                 status,
+                phase,
                 role,
                 content,
             } => {
@@ -249,6 +279,9 @@ impl Serialize for Item {
                 if let Some(value) = status {
                     state.serialize_field("status", value)?;
                 }
+                if let Some(value) = phase {
+                    state.serialize_field("phase", value)?;
+                }
                 state.serialize_field("role", role)?;
                 state.serialize_field("content", content)?;
                 state.end()
@@ -256,6 +289,7 @@ impl Serialize for Item {
             Self::FunctionCall {
                 id,
                 status,
+                phase,
                 name,
                 call_id,
                 arguments,
@@ -268,6 +302,9 @@ impl Serialize for Item {
                 if let Some(value) = status {
                     state.serialize_field("status", value)?;
                 }
+                if let Some(value) = phase {
+                    state.serialize_field("phase", value)?;
+                }
                 state.serialize_field("name", name)?;
                 state.serialize_field("call_id", call_id)?;
                 state.serialize_field("arguments", arguments)?;
@@ -275,6 +312,7 @@ impl Serialize for Item {
             }
             Self::FunctionCallOutput {
                 id,
+                phase,
                 call_id,
                 output,
             } => {
@@ -283,6 +321,9 @@ impl Serialize for Item {
                 if let Some(value) = id {
                     state.serialize_field("id", value)?;
                 }
+                if let Some(value) = phase {
+                    state.serialize_field("phase", value)?;
+                }
                 state.serialize_field("call_id", call_id)?;
                 state.serialize_field("output", output)?;
                 state.end()
@@ -290,6 +331,7 @@ impl Serialize for Item {
             Self::McpCall {
                 id,
                 status,
+                phase,
                 call_id,
                 server_label,
                 name,
@@ -305,6 +347,9 @@ impl Serialize for Item {
                 }
                 if let Some(value) = status {
                     state.serialize_field("status", value)?;
+                }
+                if let Some(value) = phase {
+                    state.serialize_field("phase", value)?;
                 }
                 state.serialize_field("call_id", call_id)?;
                 state.serialize_field("server_label", server_label)?;
@@ -324,6 +369,7 @@ impl Serialize for Item {
             Self::McpListTools {
                 id,
                 status,
+                phase,
                 server_label,
                 tools,
             } => {
@@ -335,6 +381,9 @@ impl Serialize for Item {
                 if let Some(value) = status {
                     state.serialize_field("status", value)?;
                 }
+                if let Some(value) = phase {
+                    state.serialize_field("phase", value)?;
+                }
                 state.serialize_field("server_label", server_label)?;
                 if let Some(value) = tools {
                     state.serialize_field("tools", value)?;
@@ -344,6 +393,7 @@ impl Serialize for Item {
             Self::McpApprovalRequest {
                 id,
                 status,
+                phase,
                 server_label,
                 name,
                 arguments,
@@ -356,6 +406,9 @@ impl Serialize for Item {
                 if let Some(value) = status {
                     state.serialize_field("status", value)?;
                 }
+                if let Some(value) = phase {
+                    state.serialize_field("phase", value)?;
+                }
                 state.serialize_field("server_label", server_label)?;
                 state.serialize_field("name", name)?;
                 state.serialize_field("arguments", arguments)?;
@@ -364,6 +417,7 @@ impl Serialize for Item {
             Self::McpApprovalResponse {
                 id,
                 status,
+                phase,
                 approval_request_id,
                 approve,
                 reason,
@@ -375,6 +429,9 @@ impl Serialize for Item {
                 }
                 if let Some(value) = status {
                     state.serialize_field("status", value)?;
+                }
+                if let Some(value) = phase {
+                    state.serialize_field("phase", value)?;
                 }
                 state.serialize_field("approval_request_id", approval_request_id)?;
                 state.serialize_field("approve", approve)?;

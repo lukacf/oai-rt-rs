@@ -11,9 +11,12 @@ A Rust client for the [OpenAI Realtime API](https://platform.openai.com/docs/gui
 - GA-aligned Realtime API protocol models (WebSocket + REST).
 - GA-only behavior: beta headers/events are not supported (e.g., `response.output_item.created`).
 - Voice-first SDK with full-duplex audio streaming, VAD, and barge-in helpers.
+- GPT Realtime 2 support with configurable reasoning effort.
+- First-class streaming translation and transcription session helpers.
 - Strongly typed `ClientEvent` and `ServerEvent` enums.
 - WebRTC SDP signaling, SIP control endpoints, and call hangup (low-level REST).
 - Sideband WebSocket attach for existing calls via `call_id`.
+- Optional `OpenAI-Safety-Identifier` headers for WebSocket, REST session creation, and WebRTC calls.
 - Async interface using `tokio` and `tokio-tungstenite`.
 - Client-side validation for GA constraints (PCM 24kHz, output modalities, 15MB audio chunks).
 
@@ -24,11 +27,13 @@ A Rust client for the [OpenAI Realtime API](https://platform.openai.com/docs/gui
 async fn main() -> oai_rt_rs::Result<()> {
     let mut session = Realtime::builder()
         .api_key("your-api-key")
-        .model("gpt-realtime")
+        .model(oai_rt_rs::GPT_REALTIME_2)
         .voice_session()
-        .voice("alloy")
+        .voice("marin")
         .vad_server_default()
-        .transcription("gpt-4o-transcribe")
+        .transcription(oai_rt_rs::GPT_REALTIME_WHISPER)
+        .reasoning_effort(oai_rt_rs::ReasoningEffort::Low)
+        .safety_identifier("hashed-user-id")
         .auto_barge_in(true)
         .connect_ws()
         .await?;
@@ -132,7 +137,7 @@ pub struct SumResp {
 # async fn demo() -> oai_rt_rs::Result<()> {
 let _session = Realtime::builder()
     .api_key("your-api-key")
-    .model("gpt-realtime")
+    .model(oai_rt_rs::GPT_REALTIME_2)
     .voice_session()
     .tool_desc("sum", "Add two integers.", |args: SumArgs| async move {
         Ok(SumResp { sum: args.a + args.b })
@@ -173,6 +178,128 @@ async fn main() -> oai_rt_rs::Result<()> {
     Ok(())
 }
 ```
+
+## Realtime translation
+
+Translation sessions use the dedicated `/v1/realtime/translations` WebSocket
+endpoint and the `gpt-realtime-translate` model. They stream continuously from
+incoming audio; do not call `response.create`.
+
+```rust
+use oai_rt_rs::{Realtime, SdkEvent};
+
+# async fn demo() -> oai_rt_rs::Result<()> {
+let mut session = Realtime::translation_builder()
+    .api_key("your-api-key")
+    .translation_language("es")
+    .safety_identifier("hashed-user-id")
+    .connect_ws()
+    .await?;
+
+let pcm_samples = vec![0i16; 2400];
+session.translation_audio_append_pcm16(&pcm_samples).await?;
+
+while let Some(event) = session.next_event().await? {
+    match event {
+        SdkEvent::TranslationAudioDelta { delta } => {
+            println!("translated audio base64 bytes: {}", delta.len());
+        }
+        SdkEvent::TranslationOutputTranscriptDelta { delta } => {
+            print!("{delta}");
+        }
+        SdkEvent::TranslationInputTranscriptDelta { delta } => {
+            eprint!("{delta}");
+        }
+        _ => {}
+    }
+}
+# Ok(())
+# }
+```
+
+## Realtime transcription
+
+Transcription sessions use `type: "transcription"` and default to
+`gpt-realtime-whisper` when using the high-level builder helper. The SDK uses
+the transcription WebSocket target (`/v1/realtime?intent=transcription`) and
+sends the initial `transcription_session.update` event for this session family.
+
+```rust
+use oai_rt_rs::Realtime;
+
+# async fn demo() -> oai_rt_rs::Result<()> {
+let mut session = Realtime::transcription_builder()
+    .api_key("your-api-key")
+    .transcription_language("en")
+    .transcription_prompt("Keywords: metoprolol, systolic")
+    .include_transcription_logprobs()
+    .connect_ws()
+    .await?;
+
+session.audio_in_append_pcm16(&[0i16; 2400]).await?;
+session.audio_in_commit().await?;
+
+while let Some(event) = session.next_event().await? {
+    if let oai_rt_rs::SdkEvent::InputTranscriptionDelta { delta, .. } = event {
+        print!("{delta}");
+    }
+}
+# Ok(())
+# }
+```
+
+Transcription prompts are best-effort steering for vocabulary, spelling,
+punctuation, and light formatting. For enriched transcripts with markers such as
+`[laughing]` or pronunciation notes, keep the prompt short and treat the output
+as advisory. For stronger instruction following, run an out-of-band Realtime
+text response after each committed audio turn with `conversation: "none"` and
+`output_modalities: ["text"]`.
+
+## Realtime 2 phases and preambles
+
+`gpt-realtime-2` can produce intermediate commentary, including spoken
+preambles around tool use, before its final answer. Response output items expose
+this as `ResponsePhase::Commentary` or `ResponsePhase::FinalAnswer`, so apps can
+show or play short progress updates differently from final user-facing content.
+
+## Runnable examples
+
+The repository includes sample apps that show live transcript deltas as they
+arrive:
+
+```bash
+OPENAI_API_KEY=... cargo run --example ws_voice_tools_mic
+OPENAI_API_KEY=... cargo run --example ws_translate_mic -- es
+OPENAI_API_KEY=... cargo run --example webrtc_server
+```
+
+- `ws_voice_tools_mic` is a WebSocket voice-to-voice session with a typed `sum`
+  tool, live user and assistant transcript deltas, assistant audio playback, and
+  SDK auto-barge-in. This example is headset-first: it uses raw device capture
+  and playback and does not provide acoustic echo cancellation. For
+  speakerphone-style full duplex, prefer the browser WebRTC example or a native
+  audio stack with platform AEC.
+- `ws_translate_mic` is a WebSocket microphone translation stream. It requires a
+  default input device and converts the capture stream to the 24 kHz mono PCM
+  expected by the Realtime API while printing source and translated transcript
+  deltas live.
+- `webrtc_server` serves browser WebRTC mini-apps at `http://127.0.0.1:3000/`.
+  It mints ephemeral voice and translation sessions on the server, keeps your
+  standard API key out of the browser, and propagates `OPENAI_SAFETY_IDENTIFIER`
+  when set. The chat page includes local `sum` tool calling and a server-side
+  `web_search` bridge that calls the Responses API hosted web search tool,
+  streams a short spoken preamble, and displays clickable citations. Set
+  `OPENAI_WEB_SEARCH_MODEL` to override the default search model (`gpt-5.5`).
+
+### Audio echo cancellation
+
+The SDK transports Realtime audio and events, but it does not implement acoustic
+echo cancellation (AEC). WebSocket/native examples that capture a microphone and
+play assistant audio through speakers can feed the assistant's audio back into
+the microphone unless the user wears headphones or the application integrates a
+platform AEC stack. Browser WebRTC is the recommended sample path for
+speakerphone-grade full-duplex voice because the browser media pipeline can
+provide echo cancellation, noise suppression, and automatic gain control.
 
 `session.update` and `response.create` request configs serialize sparsely:
 unset `Option` fields are omitted from JSON. Fields modeled as `Nullable<T>`
@@ -224,7 +351,7 @@ use oai_rt_rs::protocol::models::{SessionConfig, SessionKind, OutputModalities};
 let rest = RealtimeRestAdapter::new("your-api-key")?;
 let session = SessionConfig::new(
     SessionKind::Realtime,
-    "gpt-realtime",
+    oai_rt_rs::GPT_REALTIME_2,
     OutputModalities::Audio,
 );
 

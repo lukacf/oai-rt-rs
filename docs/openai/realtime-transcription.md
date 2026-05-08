@@ -3,6 +3,14 @@ Realtime transcription
 
 Learn how to transcribe audio in real-time with the Realtime API.
 
+Current model
+-------------
+
+For lowest-latency streaming transcription, use `gpt-realtime-whisper` in a
+Realtime transcription session. It is designed for live transcript deltas and
+tunable latency. Request-based file transcription remains a separate Audio API
+use case.
+
 You can use the Realtime API for transcription-only use cases, either with input from a microphone or from a file. For example, you can use it to generate subtitles or transcripts in real-time. With the transcription-only mode, the model will not generate responses.
 
 If you want the model to produce responses, you can use the Realtime API in [speech-to-speech conversation mode](/docs/guides/realtime-conversations).
@@ -10,44 +18,17 @@ If you want the model to produce responses, you can use the Realtime API in [spe
 Realtime transcription sessions
 -------------------------------
 
-To use the Realtime API for transcription, you need to create a transcription session, connecting via [WebSockets](/docs/guides/realtime?use-case=transcription#connect-with-websockets) or [WebRTC](/docs/guides/realtime?use-case=transcription#connect-with-webrtc).
+To use the Realtime API for transcription, create a transcription session over
+WebSockets with `/v1/realtime?intent=transcription` or mint a transcription
+client secret with `/v1/realtime/transcription_sessions` for browser clients.
 
 Unlike the regular Realtime API sessions for conversations, the transcription sessions typically don't contain responses from the model.
 
 The transcription session object uses the same base session shape, but it always has a `type` of `"transcription"`:
 
-```json
-{
-  "object": "realtime.session",
-  "type": "transcription",
-  "id": "session_abc123",
-  "audio": {
-    "input": {
-      "format": {
-        "type": "audio/pcm",
-        "rate": 24000
-      },
-      "noise_reduction": {
-        "type": "near_field"
-      },
-      "transcription": {
-        "model": "gpt-4o-transcribe",
-        "prompt": "",
-        "language": "en"
-      },
-      "turn_detection": {
-        "type": "server_vad",
-        "threshold": 0.5,
-        "prefix_padding_ms": 300,
-        "silence_duration_ms": 500
-      }
-    }
-  },
-  "include": [
-    "item.input_audio_transcription.logprobs"
-  ]
-}
-```
+The SDK high-level transcription builder stores transcription settings in the
+same nested `audio.input` model used by Realtime sessions, then flattens them
+into `transcription_session.update` when opening a transcription WebSocket.
 
 ### Session fields
 
@@ -58,7 +39,7 @@ The transcription session object uses the same base session shape, but it always
     *   `audio/pcma` (G.711 A-law).
 *   `audio.input.noise_reduction`: Optional noise reduction that runs before VAD and turn detection. Use `{ "type": "near_field" }`, `{ "type": "far_field" }`, or `null` to disable.
 *   `audio.input.transcription`: Optional asynchronous transcription of input audio. Supply:
-    *   `model`: One of `whisper-1`, `gpt-4o-transcribe-latest`, `gpt-4o-mini-transcribe`, or `gpt-4o-transcribe`.
+    *   `model`: Use `gpt-realtime-whisper` for streaming transcription sessions.
     *   `language`: ISO-639-1 code such as `en`.
     *   `prompt`: Prompt text or keyword list (model-dependent) that guides the transcription output.
 *   `audio.input.turn_detection`: Optional automatic voice activity detection (VAD). Set to `null` to manage turn boundaries manually. For `server_vad`, you can tune `threshold`, `prefix_padding_ms`, `silence_duration_ms`, `interrupt_response`, `create_response`, and `idle_timeout_ms`. For `semantic_vad`, configure `eagerness`, `interrupt_response`, and `create_response`.
@@ -71,7 +52,8 @@ Handling transcriptions
 
 When using the Realtime API for transcription, you can listen for the `conversation.item.input_audio_transcription.delta` and `conversation.item.input_audio_transcription.completed` events.
 
-For `whisper-1` the `delta` event will contain full turn transcript, same as `completed` event. For `gpt-4o-transcribe` and `gpt-4o-mini-transcribe` the `delta` event will contain incremental transcripts as they are streamed out from the model.
+For `gpt-realtime-whisper`, the `delta` event contains incremental transcript
+text as it is streamed out from the model.
 
 Here is an example transcription delta event:
 
@@ -134,28 +116,45 @@ Those logprobs can be used to calculate the confidence score of the transcriptio
 
 ```json
 {
-  "type": "session.update",
-  "session": {
-    "audio": {
-      "input": {
-        "format": {
-          "type": "audio/pcm",
-          "rate": 24000
-        },
-        "transcription": {
-          "model": "gpt-4o-transcribe"
-        },
-        "turn_detection": {
-          "type": "server_vad",
-          "threshold": 0.5,
-          "prefix_padding_ms": 300,
-          "silence_duration_ms": 500
-        }
-      }
-    },
-    "include": [
-      "item.input_audio_transcription.logprobs"
-    ]
-  }
+  "type": "transcription_session.update",
+  "input_audio_format": { "type": "audio/pcm", "rate": 24000 },
+  "input_audio_transcription": {
+    "model": "gpt-realtime-whisper",
+    "language": "en"
+  },
+  "turn_detection": {
+    "type": "server_vad",
+    "threshold": 0.5,
+    "prefix_padding_ms": 300,
+    "silence_duration_ms": 500
+  },
+  "include": ["item.input_audio_transcription.logprobs"]
 }
 ```
+
+### Enriched transcript prompts
+
+`audio.input.transcription.prompt` can steer vocabulary, formatting, and style
+when the selected transcription model and endpoint support prompt steering. This
+is useful for short keyword lists, domain terms, preferred spellings, and light
+formatting hints.
+
+For paralinguistic markers such as `[laughing]`, `[sarcastic]`, or pronunciation
+notes, treat the transcription prompt as best-effort. The transcript is still a
+model interpretation of the audio, and subtle tone labels are not guaranteed.
+Keep prompts short and ask the model to add markers only when the audio strongly
+supports them:
+
+```text
+Transcribe verbatim. Preserve filler words. Add bracketed markers like
+[laughing] or [sarcastic] only when clearly audible. Use pronunciation notes
+only when the speaker explicitly emphasizes how a word was said.
+```
+
+For higher-quality enriched transcripts in a voice-agent session, use an
+out-of-band Realtime text response after each committed user audio turn. Send a
+separate `response.create` with `conversation: "none"` and `output_modalities:
+["text"]`, and give that request richer transcription instructions. That uses
+the Realtime model itself for the transcript pass, keeps the enriched transcript
+out of the main conversation state, and generally follows nuanced transcription
+instructions better than the lightweight realtime ASR path.

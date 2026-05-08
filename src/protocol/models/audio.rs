@@ -97,6 +97,8 @@ pub struct OutputAudioConfig {
     pub voice: Option<Voice>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub speed: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

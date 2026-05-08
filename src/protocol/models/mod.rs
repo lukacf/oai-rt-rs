@@ -11,8 +11,10 @@ pub use audio::{
     NoiseReductionType, OutputAudioConfig, TurnDetection,
 };
 pub use common::{
-    ArbitraryJson, DEFAULT_MODEL, Eagerness, Infinite, ItemStatus, JsonSchema, MaxTokens, Metadata,
-    Modality, Nullable, OutputModalities, PromptRef, Role, Temperature, TemperatureError, Voice,
+    ArbitraryJson, DEFAULT_MODEL, Eagerness, GPT_REALTIME_2, GPT_REALTIME_TRANSLATE,
+    GPT_REALTIME_WHISPER, Infinite, ItemStatus, JsonSchema, MaxTokens, Metadata, Modality,
+    Nullable, OutputModalities, PromptRef, ReasoningConfig, ReasoningEffort, ResponsePhase, Role,
+    Temperature, TemperatureError, Voice,
 };
 pub use items::{AudioPartFormat, ContentPart, Item};
 pub use response::{
@@ -20,8 +22,8 @@ pub use response::{
 };
 pub use session::{
     RetentionRatioTruncation, Session, SessionConfig, SessionKind, SessionUpdate,
-    SessionUpdateConfig, TokenLimits, Tracing, TracingAuto, TracingConfig, Truncation,
-    TruncationStrategy, TruncationType,
+    SessionUpdateConfig, TokenLimits, Tracing, TracingAuto, TracingConfig,
+    TranscriptionSessionUpdateConfig, Truncation, TruncationStrategy, TruncationType,
 };
 pub use tools::{
     ApprovalFilter, ApprovalMode, McpError, McpToolConfig, McpToolInfo, RequireApproval, Tool,

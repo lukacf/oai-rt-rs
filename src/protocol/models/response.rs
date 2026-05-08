@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use super::{
-    AudioConfig, Item, MaxTokens, Metadata, OutputModalities, Temperature, Tool, ToolChoice, Voice,
+    AudioConfig, Item, MaxTokens, Metadata, OutputModalities, ReasoningConfig, Temperature, Tool,
+    ToolChoice, Voice,
 };
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -41,6 +42,8 @@ pub struct ResponseConfig {
     pub tools: Option<Vec<Tool>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<ToolChoice>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<ReasoningConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

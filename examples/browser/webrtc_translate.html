@@ -1,0 +1,656 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>oai-rt-rs · realtime · translate</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%231C1A17'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg:        #ECEAE4;
+  --surface:   #F6F4EE;
+  --paper:     #FAF8F2;
+  --ink:       #1C1A17;
+  --muted:     #6B6760;
+  --subtle:    #A8A49B;
+  --hair:      #D6D2C8;
+  --ink-soft:  rgba(28, 26, 23, 0.04);
+
+  --accent:      #D95A1E;
+  --accent-soft: rgba(217, 90, 30, 0.08);
+  --danger:      #C23A1A;
+  --ok:    oklch(0.58 0.14 150);
+  --warn:  oklch(0.65 0.16 70);
+
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --pad-x: clamp(20px, 3.2vw, 40px);
+  --top-h: 56px;
+  --rail-h: 44px;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  font: 400 13px/1.5 var(--font-sans);
+  letter-spacing: -0.003em;
+  color: var(--ink);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: "ss01", "cv11";
+  min-height: 100vh;
+}
+
+/* ───── System-voice utilities ─────────────────────────────────── */
+.eyebrow {
+  font: 500 10.5px/1.4 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.label-mono {
+  font: 500 10px/1.4 var(--font-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.meta-mono {
+  font: 400 11px/1.45 var(--font-mono);
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  font-feature-settings: "tnum" 1;
+  white-space: nowrap;
+}
+
+/* ───── Top rail ───────────────────────────────────────────────── */
+.rail {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  height: var(--top-h);
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  padding: 0 var(--pad-x);
+  background: var(--surface);
+  border-bottom: 1px solid var(--ink);
+  gap: 24px;
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font: 500 11px/1 var(--font-mono);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink);
+  white-space: nowrap;
+  min-width: 0;
+}
+.brand > span { white-space: nowrap; }
+.brand__mark { width: 10px; height: 10px; background: var(--ink); }
+.brand__sep { color: var(--subtle); margin: 0 4px; }
+.brand__sub { color: var(--muted); }
+
+/* Language selector — hairline-style input. */
+.lang {
+  justify-self: center;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 16px;
+}
+.lang__pair {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  font: 500 12px/1 var(--font-mono);
+  letter-spacing: 0.06em;
+  color: var(--ink);
+}
+.lang__from   { text-transform: uppercase; color: var(--muted); }
+.lang__arrow  { color: var(--subtle); }
+.lang__input {
+  font: 500 12px/1 var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--ink);
+  padding: 4px 2px;
+  width: 64px;
+  text-align: left;
+  outline: none;
+  border-radius: 0;
+  appearance: none;
+}
+.lang__input:focus { border-bottom-color: var(--accent); }
+
+.actions {
+  display: flex;
+  gap: 0;
+  justify-self: end;
+}
+
+/* Status (right slot of rail bottom-row when narrow) is in composer instead. */
+
+/* ───── Buttons ────────────────────────────────────────────────── */
+.btn {
+  font: 500 13px/1 var(--font-sans);
+  color: var(--ink);
+  background: transparent;
+  border: 1px solid var(--ink);
+  padding: 9px 16px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 80ms linear;
+}
+.btn + .btn { border-left: 0; }
+.btn:hover:not(:disabled) { background: var(--ink-soft); }
+.btn:disabled {
+  color: var(--subtle);
+  border-color: var(--hair);
+  cursor: not-allowed;
+}
+.btn--primary {
+  background: var(--ink);
+  color: var(--surface);
+}
+.btn--primary:hover:not(:disabled) { background: #2C2924; }
+
+/* ───── Layout ─────────────────────────────────────────────────── */
+.app {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+.body {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  min-height: 0;
+}
+@media (max-width: 880px) {
+  .body { grid-template-columns: 1fr; }
+}
+
+.col {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.col + .col { border-left: 1px solid var(--hair); }
+@media (max-width: 880px) {
+  .col + .col { border-left: 0; border-top: 1px solid var(--hair); }
+}
+
+.col__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 18px var(--pad-x) 12px;
+  border-bottom: 1px solid var(--hair);
+  position: sticky;
+  top: var(--top-h);
+  background: var(--bg);
+  z-index: 5;
+  gap: 16px;
+}
+.col__title {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+.col__title .eyebrow { color: var(--ink); }
+.col__lang {
+  font: 500 10.5px/1.4 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: 2px 6px;
+  border: 1px solid var(--hair);
+  white-space: nowrap;
+}
+.col--target .col__lang { color: var(--accent); border-color: var(--accent); }
+
+.col__count { color: var(--muted); }
+
+.col__body {
+  padding: 28px var(--pad-x) 120px;
+  overflow-y: auto;
+  flex: 1;
+  font: 400 18px/1.6 var(--font-sans);
+  letter-spacing: -0.008em;
+  color: var(--ink);
+  white-space: pre-wrap;
+  text-wrap: pretty;
+}
+.col--target .col__body { color: var(--ink); }
+
+/* Caret on streaming column */
+.col__body--live::after {
+  content: "▍";
+  display: inline-block;
+  margin-left: 2px;
+  color: var(--accent);
+  animation: blink 1s steps(2) infinite;
+}
+@keyframes blink { 50% { opacity: 0; } }
+
+/* Empty state */
+.empty {
+  font: 400 14px/1.5 var(--font-sans);
+  color: var(--muted);
+  letter-spacing: -0.003em;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 44ch;
+}
+.empty .label-mono { color: var(--subtle); margin-bottom: 6px; }
+.empty__title {
+  font: 500 18px/1.25 var(--font-sans);
+  letter-spacing: -0.015em;
+  color: var(--ink);
+}
+
+/* ───── Composer / status rail (footer) ───────────────────────── */
+.composer {
+  position: sticky;
+  bottom: 0;
+  z-index: 8;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  height: var(--rail-h);
+  padding: 0 var(--pad-x);
+  background: var(--surface);
+  border-top: 1px solid var(--ink);
+  gap: 16px;
+}
+.composer__left  { display: flex; align-items: center; gap: 12px; }
+.composer__center { justify-self: center; display: flex; align-items: center; gap: 10px; }
+.composer__right { justify-self: end; display: flex; align-items: center; gap: 12px; }
+
+.status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.status__dot {
+  width: 6px;
+  height: 6px;
+  background: var(--subtle);
+  display: inline-block;
+}
+.status[data-state="live"]    .status__dot { background: var(--ok); }
+.status[data-state="error"]   .status__dot { background: var(--danger); }
+.status[data-state="pending"] .status__dot {
+  background: var(--warn);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+#status-text { color: var(--ink); }
+
+/* Mic level meter */
+.meter {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 14px;
+}
+.meter span {
+  display: inline-block;
+  width: 2px;
+  background: var(--subtle);
+}
+.meter span:nth-child(1) { height: 4px; }
+.meter span:nth-child(2) { height: 8px; }
+.meter span:nth-child(3) { height: 12px; }
+.meter span:nth-child(4) { height: 8px; }
+.meter span:nth-child(5) { height: 4px; }
+.composer[data-live="true"] .meter span {
+  background: var(--accent);
+  animation: bars 0.8s ease-in-out infinite;
+}
+.composer[data-live="true"] .meter span:nth-child(2) { animation-delay: 0.1s; }
+.composer[data-live="true"] .meter span:nth-child(3) { animation-delay: 0.2s; }
+.composer[data-live="true"] .meter span:nth-child(4) { animation-delay: 0.3s; }
+.composer[data-live="true"] .meter span:nth-child(5) { animation-delay: 0.4s; }
+@keyframes bars { 0%, 100% { transform: scaleY(1); } 50% { transform: scaleY(0.4); } }
+
+audio { display: none; }
+
+@media (max-width: 720px) {
+  .rail { grid-template-columns: auto 1fr; }
+  .lang { justify-self: end; padding: 0; }
+  .actions { grid-column: 1 / -1; padding: 8px var(--pad-x); border-top: 1px solid var(--hair); justify-self: stretch; }
+  .col__body { font-size: 16px; }
+  .composer { grid-template-columns: 1fr 1fr; }
+  .composer__center { display: none; }
+}
+</style>
+</head>
+<body>
+  <div class="app">
+
+    <header class="rail">
+      <div class="brand">
+        <span class="brand__mark"></span>
+        <span>oai-rt-rs</span>
+        <span class="brand__sep">·</span>
+        <span class="brand__sub">realtime · translate</span>
+      </div>
+
+      <div class="lang">
+        <div class="lang__pair">
+          <span class="lang__from">auto</span>
+          <span class="lang__arrow">→</span>
+          <select id="language" class="lang__input">
+            <option value="es">es</option>
+            <option value="fr">fr</option>
+            <option value="de">de</option>
+            <option value="it">it</option>
+            <option value="pt">pt</option>
+            <option value="sv">sv</option>
+            <option value="ja">ja</option>
+            <option value="ko">ko</option>
+            <option value="zh">zh</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button id="start" class="btn btn--primary">Start translating</button>
+        <button id="stop"  class="btn" disabled>Stop</button>
+      </div>
+    </header>
+
+    <main class="body">
+      <section class="col col--source">
+        <header class="col__head">
+          <div class="col__title">
+            <span class="eyebrow">Source</span>
+            <span class="col__lang" id="source-lang">AUTO</span>
+          </div>
+          <span class="meta-mono col__count" id="source-count">0 chars</span>
+        </header>
+        <div class="col__body" id="source">
+          <div class="empty">
+            <span class="label-mono">Awaiting input</span>
+            <div class="empty__title">Speak into your microphone</div>
+            <div>Source transcript appears here as it is recognised — verbatim, in the original language.</div>
+          </div>
+        </div>
+      </section>
+
+      <section class="col col--target">
+        <header class="col__head">
+          <div class="col__title">
+            <span class="eyebrow">Translation</span>
+            <span class="col__lang" id="target-lang">ES</span>
+          </div>
+          <span class="meta-mono col__count" id="target-count">0 chars</span>
+        </header>
+        <div class="col__body" id="translation">
+          <div class="empty">
+            <span class="label-mono">Awaiting output</span>
+            <div class="empty__title">Translation streams here</div>
+            <div>Each clause arrives as the model commits to it. Clauses appear progressively, like subtitles.</div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="composer" id="composer" data-live="false">
+      <div class="composer__left">
+        <div class="status" data-state="idle" id="status">
+          <span class="status__dot"></span>
+          <span class="meta-mono" id="status-text">IDLE</span>
+        </div>
+      </div>
+      <div class="composer__center">
+        <span class="meter"><span></span><span></span><span></span><span></span><span></span></span>
+        <span class="meta-mono" id="mic-state">microphone idle</span>
+      </div>
+      <div class="composer__right">
+        <span class="meta-mono">Latency</span>
+        <span class="meta-mono" id="latency" style="color: var(--ink);">— ms</span>
+      </div>
+    </footer>
+
+    <audio id="remote" autoplay></audio>
+  </div>
+
+<script>
+const REALTIME_TRANSLATIONS_URL = "https://api.openai.com/v1/realtime/translations";
+const DEMO = new URLSearchParams(location.search).has("demo");
+
+let pc, dc, localStream;
+let sourceText = "";
+let translationText = "";
+let lastDeltaAt = 0;
+
+const $ = (id) => document.getElementById(id);
+const setStatus = (state, text) => {
+  $("status").dataset.state = state;
+  $("status-text").textContent = text.toUpperCase();
+};
+const setMic = (text, live = false) => {
+  $("mic-state").textContent = text;
+  $("composer").dataset.live = live ? "true" : "false";
+};
+
+function clearEmpty(id) { $(id).innerHTML = ""; }
+
+function setSource(text) {
+  sourceText = text;
+  if (sourceText.length === 0) return;
+  $("source").classList.add("col__body--live");
+  $("source").textContent = sourceText;
+  $("source-count").textContent = `${sourceText.length} chars`;
+  $("source").scrollTop = $("source").scrollHeight;
+}
+function setTranslation(text) {
+  translationText = text;
+  if (translationText.length === 0) return;
+  $("translation").classList.add("col__body--live");
+  $("translation").textContent = translationText;
+  $("target-count").textContent = `${translationText.length} chars`;
+  $("translation").scrollTop = $("translation").scrollHeight;
+}
+
+setStatus("idle", "idle");
+
+/* ────────────────────────────────────────────────────────────── */
+$("start").onclick = async () => {
+  const language = $("language").value.trim();
+  $("target-lang").textContent = language ? language.toUpperCase() : "—";
+  if (!language) {
+    setStatus("error", "enter a target language");
+    return;
+  }
+
+  $("start").disabled = true;
+  if (DEMO) { runDemo(language); return; }
+
+  try {
+    setStatus("pending", "minting session");
+    const token = await fetchJson(`/session/translation?language=${encodeURIComponent(language)}`);
+
+    pc = new RTCPeerConnection();
+    pc.ontrack = (event) => $("remote").srcObject = event.streams[0];
+    dc = pc.createDataChannel("oai-events");
+    dc.onopen = () => {
+      setStatus("live", `live · ${language}`);
+      setMic("listening", true);
+    };
+    dc.onmessage = (message) => handleEvent(JSON.parse(message.data));
+
+    localStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      },
+    });
+    pc.addTrack(localStream.getAudioTracks()[0]);
+
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    const answerSdp = await fetchText(REALTIME_TRANSLATIONS_URL, {
+      method: "POST",
+      body: offer.sdp,
+      headers: {
+        Authorization: `Bearer ${token.value}`,
+        "Content-Type": "application/sdp",
+      },
+    });
+    await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
+    $("stop").disabled = false;
+  } catch (error) {
+    setStatus("error", `error · ${error.message}`);
+    setMic("microphone idle");
+    $("start").disabled = false;
+  }
+};
+
+$("stop").onclick = () => {
+  dc?.close();
+  pc?.close();
+  localStream?.getTracks().forEach((track) => track.stop());
+  $("start").disabled = false;
+  $("stop").disabled = true;
+  setStatus("idle", "stopped");
+  setMic("microphone idle");
+};
+
+function handleEvent(event) {
+  switch (event.type) {
+    case "session.input_transcript.delta":
+      if (sourceText.length === 0) clearEmpty("source");
+      setSource(sourceText + (event.delta || ""));
+      break;
+    case "session.output_transcript.delta":
+      if (translationText.length === 0) clearEmpty("translation");
+      setTranslation(translationText + (event.delta || ""));
+      const now = performance.now();
+      if (lastDeltaAt) $("latency").textContent = `${Math.round(now - lastDeltaAt)} ms`;
+      lastDeltaAt = now;
+      break;
+    case "error":
+      setStatus("error", `error · ${event.error?.message || "unknown error"}`);
+      break;
+  }
+}
+
+async function fetchJson(url) {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(await response.text());
+  return response.json();
+}
+async function fetchText(url, init) {
+  const response = await fetch(url, init);
+  if (!response.ok) throw new Error(await response.text());
+  return response.text();
+}
+
+/* ────────────────────────────────────────────────────────────── */
+/*  Demo mode — preview without a backend, visit ?demo=1          */
+/* ────────────────────────────────────────────────────────────── */
+async function runDemo(language) {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  setStatus("pending", "minting translation session");
+  setMic("connecting");
+  await sleep(600);
+  setStatus("live", `live · ${language}`);
+  setMic("listening", true);
+  $("stop").disabled = false;
+
+  // Pretend the speaker is in English; translate to whatever the user typed.
+  // We hard-code a Spanish demo because the field defaults to "es".
+  const lang = language.toLowerCase();
+  const pairs = lang.startsWith("es") ? esPairs
+            : lang.startsWith("fr") ? frPairs
+            : lang.startsWith("de") ? dePairs
+            : lang.startsWith("ja") ? jaPairs
+            : esPairs;
+
+  await sleep(400);
+  $("source-lang").textContent = "EN";
+  clearEmpty("source");
+  clearEmpty("translation");
+
+  for (const [src, tgt] of pairs) {
+    await streamInto("source", sourceText, src, 18, (s) => setSource(s));
+    await sleep(180);
+    $("latency").textContent = `${220 + Math.floor(Math.random() * 80)} ms`;
+    await streamInto("translation", translationText, tgt, 14, (s) => setTranslation(s));
+    await sleep(420);
+  }
+  setStatus("live", "ready");
+}
+
+async function streamInto(id, current, addition, perChar, set) {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const start = current;
+  const full  = (start ? start + " " : "") + addition;
+  for (let i = (start ? start.length + 1 : 0); i <= full.length; i++) {
+    set(full.slice(0, i));
+    await sleep(perChar);
+  }
+}
+
+const esPairs = [
+  ["Good morning everyone, thanks for joining the call.",
+   "Buenos días a todos, gracias por unirse a la llamada."],
+  ["I want to walk through the launch timeline before we open it up.",
+   "Quiero repasar el calendario de lanzamiento antes de abrir el debate."],
+  ["The release candidate is in the staging environment now.",
+   "La versión candidata ya está en el entorno de pruebas."],
+  ["We expect to ship to production on Tuesday afternoon.",
+   "Esperamos lanzar a producción el martes por la tarde."],
+];
+const frPairs = [
+  ["Good morning everyone, thanks for joining the call.",
+   "Bonjour à tous, merci d'avoir rejoint l'appel."],
+  ["I want to walk through the launch timeline before we open it up.",
+   "Je voudrais parcourir le calendrier de lancement avant d'ouvrir la discussion."],
+  ["The release candidate is in the staging environment now.",
+   "La version candidate est désormais dans l'environnement de pré-production."],
+  ["We expect to ship to production on Tuesday afternoon.",
+   "Nous prévoyons de mettre en production mardi après-midi."],
+];
+const dePairs = [
+  ["Good morning everyone, thanks for joining the call.",
+   "Guten Morgen zusammen, danke für die Teilnahme am Anruf."],
+  ["I want to walk through the launch timeline before we open it up.",
+   "Ich möchte den Zeitplan für den Launch durchgehen, bevor wir die Diskussion eröffnen."],
+  ["The release candidate is in the staging environment now.",
+   "Der Release-Kandidat befindet sich jetzt in der Staging-Umgebung."],
+  ["We expect to ship to production on Tuesday afternoon.",
+   "Wir planen, am Dienstagnachmittag in die Produktion zu gehen."],
+];
+const jaPairs = [
+  ["Good morning everyone, thanks for joining the call.",
+   "皆さん、おはようございます。お集まりいただきありがとうございます。"],
+  ["I want to walk through the launch timeline before we open it up.",
+   "議論に入る前に、ローンチのスケジュールを確認させてください。"],
+  ["The release candidate is in the staging environment now.",
+   "リリース候補はすでにステージング環境にあります。"],
+  ["We expect to ship to production on Tuesday afternoon.",
+   "火曜日の午後に本番環境へリリースする予定です。"],
+];
+</script>
+</body>
+</html>

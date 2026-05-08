@@ -7,17 +7,19 @@ pub mod protocol;
 pub mod sdk;
 pub mod transport;
 
-pub use error::{Error, Result};
+pub use error::{ApiErrorType, Error, Result, ServerError};
 pub use protocol::client_events::ClientEvent;
 pub use protocol::models::{
     ApprovalFilter, ApprovalMode, AudioConfig, AudioFormat, CachedTokenDetails, ContentPart,
-    ConversationMode, Eagerness, Infinite, InputAudioConfig, InputAudioTranscription, InputItem,
+    ConversationMode, DEFAULT_MODEL, Eagerness, GPT_REALTIME_2, GPT_REALTIME_TRANSLATE,
+    GPT_REALTIME_WHISPER, Infinite, InputAudioConfig, InputAudioTranscription, InputItem,
     InputTokenDetails, Item, ItemStatus, MaxTokens, McpError, McpToolConfig, McpToolInfo, Modality,
     NoiseReduction, NoiseReductionType, OutputAudioConfig, OutputModalities, OutputTokenDetails,
-    PromptRef, RequireApproval, Response, ResponseConfig, ResponseStatus, RetentionRatioTruncation,
-    Role, Session, SessionConfig, SessionKind, SessionUpdate, SessionUpdateConfig, Temperature,
-    TokenLimits, Tool, ToolChoice, ToolChoiceMode, Tracing, TracingAuto, TracingConfig, Truncation,
-    TruncationStrategy, TruncationType, Usage, Voice,
+    PromptRef, ReasoningConfig, ReasoningEffort, RequireApproval, Response, ResponseConfig,
+    ResponsePhase, ResponseStatus, RetentionRatioTruncation, Role, Session, SessionConfig,
+    SessionKind, SessionUpdate, SessionUpdateConfig, Temperature, TokenLimits, Tool, ToolChoice,
+    ToolChoiceMode, Tracing, TracingAuto, TracingConfig, TranscriptionSessionUpdateConfig,
+    Truncation, TruncationStrategy, TruncationType, Usage, Voice,
 };
 pub use protocol::server_events::ServerEvent;
 pub use sdk::{
@@ -58,6 +60,60 @@ impl RealtimeClient {
         call_id: Option<&str>,
     ) -> Result<Self> {
         let stream = transport::ws::connect(api_key, model, call_id).await?;
+        Ok(Self { stream })
+    }
+
+    /// Connect to the dedicated Realtime translation WebSocket endpoint.
+    ///
+    /// # Errors
+    /// Returns an error if the connection fails or if the URL is invalid.
+    pub async fn connect_translation(
+        api_key: &str,
+        model: Option<&str>,
+        safety_identifier: Option<&str>,
+    ) -> Result<Self> {
+        let stream = transport::ws::connect_with_options(
+            api_key,
+            transport::ws::WsConnectOptions {
+                model,
+                safety_identifier,
+                target: transport::ws::WsConnectTarget::Translation,
+                ..transport::ws::WsConnectOptions::default()
+            },
+        )
+        .await?;
+        Ok(Self { stream })
+    }
+
+    /// Connect to the Realtime transcription WebSocket endpoint.
+    ///
+    /// # Errors
+    /// Returns an error if the connection fails or if the URL is invalid.
+    pub async fn connect_transcription(
+        api_key: &str,
+        safety_identifier: Option<&str>,
+    ) -> Result<Self> {
+        let stream = transport::ws::connect_with_options(
+            api_key,
+            transport::ws::WsConnectOptions {
+                safety_identifier,
+                target: transport::ws::WsConnectTarget::Transcription,
+                ..transport::ws::WsConnectOptions::default()
+            },
+        )
+        .await?;
+        Ok(Self { stream })
+    }
+
+    /// Connect to the Realtime API with explicit WebSocket options.
+    ///
+    /// # Errors
+    /// Returns an error if the connection fails or if the URL is invalid.
+    pub async fn connect_with_options(
+        api_key: &str,
+        options: transport::ws::WsConnectOptions<'_>,
+    ) -> Result<Self> {
+        let stream = transport::ws::connect_with_options(api_key, options).await?;
         Ok(Self { stream })
     }
 
@@ -163,7 +219,8 @@ impl RealtimeSender {
 #[allow(clippy::result_large_err)]
 fn validate_client_event(event: &ClientEvent) -> Result<()> {
     match event {
-        ClientEvent::InputAudioBufferAppend { audio, .. } => {
+        ClientEvent::InputAudioBufferAppend { audio, .. }
+        | ClientEvent::SessionInputAudioBufferAppend { audio, .. } => {
             let size = estimate_base64_decoded_len(audio)?;
             if size > MAX_INPUT_AUDIO_CHUNK_BYTES {
                 return Err(Error::InvalidClientEvent(format!(
@@ -174,6 +231,9 @@ fn validate_client_event(event: &ClientEvent) -> Result<()> {
         ClientEvent::SessionUpdate { session, .. } => {
             validate_session_update(session.as_ref())?;
         }
+        ClientEvent::TranscriptionSessionUpdate { session, .. } => {
+            validate_transcription_session_update(session.as_ref())?;
+        }
         ClientEvent::ResponseCreate {
             response: Some(config),
             ..
@@ -181,6 +241,16 @@ fn validate_client_event(event: &ClientEvent) -> Result<()> {
             validate_response_config(config.as_ref())?;
         }
         _ => {}
+    }
+    Ok(())
+}
+
+#[allow(clippy::result_large_err)]
+fn validate_transcription_session_update(
+    config: &models::TranscriptionSessionUpdateConfig,
+) -> Result<()> {
+    if let Some(format) = &config.input_audio_format {
+        validate_audio_format(format)?;
     }
     Ok(())
 }

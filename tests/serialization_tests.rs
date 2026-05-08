@@ -1,9 +1,11 @@
 use oai_rt_rs::protocol::client_events::ClientEvent;
 use oai_rt_rs::protocol::models::{
-    AudioConfig, AudioFormat, ConversationMode, Infinite, InputAudioConfig,
-    InputAudioTranscription, InputItem, ItemStatus, MaxTokens, Nullable, OutputModalities,
-    ResponseStatus, Role, Session, SessionConfig, SessionKind, SessionUpdate, SessionUpdateConfig,
-    TurnDetection,
+    AudioConfig, AudioFormat, ConversationMode, GPT_REALTIME_2, GPT_REALTIME_WHISPER, Infinite,
+    InputAudioConfig, InputAudioTranscription, InputItem, Item, ItemStatus, MaxTokens,
+    NoiseReduction, NoiseReductionType, Nullable, OutputAudioConfig, OutputModalities,
+    ReasoningConfig, ReasoningEffort, Response, ResponsePhase, ResponseStatus, Role, Session,
+    SessionConfig, SessionKind, SessionUpdate, SessionUpdateConfig,
+    TranscriptionSessionUpdateConfig, TurnDetection,
 };
 use oai_rt_rs::protocol::server_events::ServerEvent;
 use serde_json::json;
@@ -157,6 +159,227 @@ fn test_response_create_omits_none_optionals_instead_of_serializing_nulls() {
     assert!(
         !response.contains_key("temperature"),
         "response.create should omit temperature when it is not set"
+    );
+}
+
+#[test]
+fn test_output_modalities_audio_text_serializes_for_session_and_response() {
+    let session = SessionUpdate {
+        config: SessionUpdateConfig {
+            output_modalities: Some(OutputModalities::AudioText),
+            ..SessionUpdateConfig::default()
+        },
+    };
+    let serialized = serde_json::to_value(&session).expect("serialize session update");
+    assert_eq!(
+        serialized.get("output_modalities"),
+        Some(&json!(["audio", "text"]))
+    );
+
+    let response = oai_rt_rs::protocol::models::ResponseConfig {
+        output_modalities: Some(OutputModalities::audio_text()),
+        ..oai_rt_rs::protocol::models::ResponseConfig::default()
+    };
+    let serialized = serde_json::to_value(&response).expect("serialize response config");
+    assert_eq!(
+        serialized.get("output_modalities"),
+        Some(&json!(["audio", "text"]))
+    );
+
+    let deserialized: OutputModalities =
+        serde_json::from_value(json!(["text", "audio"])).expect("deserialize audio+text");
+    assert_eq!(deserialized, OutputModalities::AudioText);
+}
+
+#[test]
+fn test_session_update_serializes_gpt_realtime_2_reasoning_effort() {
+    let event = ClientEvent::SessionUpdate {
+        event_id: None,
+        session: Box::new(SessionUpdate {
+            config: SessionUpdateConfig {
+                kind: Some(SessionKind::Realtime),
+                reasoning: Some(ReasoningConfig {
+                    effort: Some(ReasoningEffort::Low),
+                }),
+                ..SessionUpdateConfig::default()
+            },
+        }),
+    };
+
+    let serialized = serde_json::to_value(&event).expect("serialize session.update");
+    let session = serialized.get("session").expect("session");
+    assert_eq!(session.get("type"), Some(&json!("realtime")));
+    assert_eq!(session.pointer("/reasoning/effort"), Some(&json!("low")));
+    assert_eq!(GPT_REALTIME_2, "gpt-realtime-2");
+}
+
+#[test]
+fn test_response_create_serializes_reasoning_effort() {
+    let event = ClientEvent::ResponseCreate {
+        event_id: None,
+        response: Some(Box::new(oai_rt_rs::protocol::models::ResponseConfig {
+            reasoning: Some(ReasoningConfig {
+                effort: Some(ReasoningEffort::High),
+            }),
+            ..oai_rt_rs::protocol::models::ResponseConfig::default()
+        })),
+    };
+
+    let serialized = serde_json::to_value(&event).expect("serialize response.create");
+    assert_eq!(
+        serialized.pointer("/response/reasoning/effort"),
+        Some(&json!("high"))
+    );
+}
+
+#[test]
+fn test_translation_session_update_serializes_output_language() {
+    let event = ClientEvent::SessionUpdate {
+        event_id: None,
+        session: Box::new(SessionUpdate {
+            config: SessionUpdateConfig {
+                kind: Some(SessionKind::Translation),
+                audio: Some(AudioConfig {
+                    input: None,
+                    output: Some(OutputAudioConfig {
+                        format: None,
+                        voice: None,
+                        speed: None,
+                        language: Some("es".to_string()),
+                    }),
+                }),
+                ..SessionUpdateConfig::default()
+            },
+        }),
+    };
+
+    let serialized = serde_json::to_value(&event).expect("serialize translation session.update");
+    assert_eq!(
+        serialized.pointer("/session/type"),
+        Some(&json!("translation"))
+    );
+    assert_eq!(
+        serialized.pointer("/session/audio/output/language"),
+        Some(&json!("es"))
+    );
+}
+
+#[test]
+fn test_translation_audio_append_serializes_dedicated_event_type() {
+    let event = ClientEvent::SessionInputAudioBufferAppend {
+        event_id: None,
+        audio: "AAAA".to_string(),
+    };
+
+    let serialized = serde_json::to_value(&event).expect("serialize translation append");
+    assert_eq!(
+        serialized.get("type").and_then(serde_json::Value::as_str),
+        Some("session.input_audio_buffer.append")
+    );
+    assert_eq!(
+        serialized.get("audio").and_then(serde_json::Value::as_str),
+        Some("AAAA")
+    );
+}
+
+#[test]
+fn test_transcription_session_update_serializes_whisper_and_include_logprobs() {
+    let event = ClientEvent::SessionUpdate {
+        event_id: None,
+        session: Box::new(SessionUpdate {
+            config: SessionUpdateConfig {
+                kind: Some(SessionKind::Transcription),
+                include: Some(vec!["item.input_audio_transcription.logprobs".to_string()]),
+                audio: Some(AudioConfig {
+                    input: Some(InputAudioConfig {
+                        format: Some(AudioFormat::pcm_24khz()),
+                        turn_detection: Some(Nullable::Value(TurnDetection::ServerVad {
+                            threshold: Some(0.5),
+                            prefix_padding_ms: Some(300),
+                            silence_duration_ms: Some(500),
+                            idle_timeout_ms: None,
+                            create_response: None,
+                            interrupt_response: None,
+                        })),
+                        transcription: Some(Nullable::Value(InputAudioTranscription {
+                            model: Some(GPT_REALTIME_WHISPER.to_string()),
+                            language: Some("en".to_string()),
+                            prompt: None,
+                        })),
+                        noise_reduction: None,
+                    }),
+                    output: None,
+                }),
+                ..SessionUpdateConfig::default()
+            },
+        }),
+    };
+
+    let serialized = serde_json::to_value(&event).expect("serialize transcription session.update");
+    assert_eq!(
+        serialized.pointer("/session/type"),
+        Some(&json!("transcription"))
+    );
+    assert_eq!(
+        serialized.pointer("/session/audio/input/transcription/model"),
+        Some(&json!("gpt-realtime-whisper"))
+    );
+    assert_eq!(
+        serialized.pointer("/session/include/0"),
+        Some(&json!("item.input_audio_transcription.logprobs"))
+    );
+}
+
+#[test]
+fn test_transcription_session_update_event_serializes_flat_payload() {
+    let event = ClientEvent::TranscriptionSessionUpdate {
+        event_id: None,
+        session: Box::new(TranscriptionSessionUpdateConfig {
+            input_audio_format: Some(AudioFormat::pcm_24khz()),
+            input_audio_transcription: Some(Nullable::Value(InputAudioTranscription {
+                model: Some(GPT_REALTIME_WHISPER.to_string()),
+                language: Some("en".to_string()),
+                prompt: Some("Keywords: systolic, diastolic".to_string()),
+            })),
+            turn_detection: Some(Nullable::Value(TurnDetection::ServerVad {
+                threshold: Some(0.5),
+                prefix_padding_ms: Some(300),
+                silence_duration_ms: Some(500),
+                idle_timeout_ms: None,
+                create_response: None,
+                interrupt_response: None,
+            })),
+            input_audio_noise_reduction: Some(Nullable::Value(NoiseReduction {
+                kind: NoiseReductionType::NearField,
+            })),
+            include: Some(vec!["item.input_audio_transcription.logprobs".to_string()]),
+        }),
+    };
+
+    let serialized = serde_json::to_value(&event).expect("serialize transcription_session.update");
+    assert_eq!(
+        serialized.get("type").and_then(serde_json::Value::as_str),
+        Some("transcription_session.update")
+    );
+    assert_eq!(
+        serialized.pointer("/input_audio_transcription/model"),
+        Some(&json!("gpt-realtime-whisper"))
+    );
+    assert_eq!(
+        serialized.pointer("/input_audio_transcription/language"),
+        Some(&json!("en"))
+    );
+    assert_eq!(
+        serialized.pointer("/input_audio_noise_reduction/type"),
+        Some(&json!("near_field"))
+    );
+    assert_eq!(
+        serialized.pointer("/include/0"),
+        Some(&json!("item.input_audio_transcription.logprobs"))
+    );
+    assert!(
+        serialized.get("model").is_none(),
+        "transcription_session.update must not send top-level voice model"
     );
 }
 
@@ -323,6 +546,123 @@ fn test_server_event_flat_deserialization() {
 }
 
 #[test]
+fn test_translation_server_events_deserialize() {
+    let audio: ServerEvent = serde_json::from_value(json!({
+        "type": "session.output_audio.delta",
+        "delta": "AAAA"
+    }))
+    .expect("deserialize translation audio");
+    match audio {
+        ServerEvent::SessionOutputAudioDelta { event_id, delta } => {
+            assert_eq!(event_id, None);
+            assert_eq!(delta, "AAAA");
+        }
+        other => panic!("unexpected event: {other:?}"),
+    }
+
+    let output: ServerEvent = serde_json::from_value(json!({
+        "type": "session.output_transcript.delta",
+        "event_id": "evt_out",
+        "delta": "hola"
+    }))
+    .expect("deserialize output transcript");
+    match output {
+        ServerEvent::SessionOutputTranscriptDelta { event_id, delta } => {
+            assert_eq!(event_id.as_deref(), Some("evt_out"));
+            assert_eq!(delta, "hola");
+        }
+        other => panic!("unexpected event: {other:?}"),
+    }
+
+    let input: ServerEvent = serde_json::from_value(json!({
+        "type": "session.input_transcript.delta",
+        "delta": "hello"
+    }))
+    .expect("deserialize input transcript");
+    match input {
+        ServerEvent::SessionInputTranscriptDelta { delta, .. } => assert_eq!(delta, "hello"),
+        other => panic!("unexpected event: {other:?}"),
+    }
+}
+
+#[test]
+fn test_unknown_server_event_still_falls_back_to_unknown() {
+    let event: ServerEvent = serde_json::from_value(json!({
+        "type": "future.event",
+        "event_id": "evt_future",
+        "payload": true
+    }))
+    .expect("unknown event should deserialize");
+
+    match event {
+        ServerEvent::Unknown(value) => {
+            assert_eq!(value.get("type"), Some(&json!("future.event")));
+            assert_eq!(value.get("payload"), Some(&json!(true)));
+        }
+        other => panic!("unexpected event: {other:?}"),
+    }
+}
+
+#[test]
+fn test_response_output_items_preserve_realtime_2_phase() {
+    let response: Response = serde_json::from_value(json!({
+        "id": "resp_1",
+        "object": "realtime.response",
+        "conversation_id": "conv_1",
+        "status": "completed",
+        "status_details": null,
+        "output": [
+            {
+                "type": "message",
+                "id": "item_commentary",
+                "status": "completed",
+                "phase": "commentary",
+                "role": "assistant",
+                "content": []
+            },
+            {
+                "type": "message",
+                "id": "item_final",
+                "status": "completed",
+                "phase": "final_answer",
+                "role": "assistant",
+                "content": []
+            }
+        ],
+        "output_modalities": ["audio", "text"],
+        "max_output_tokens": "inf",
+        "audio": null,
+        "metadata": null,
+        "usage": null
+    }))
+    .expect("deserialize response");
+
+    let output = response.output.as_ref().expect("response output");
+    match &output[0] {
+        Item::Message { phase, .. } => assert_eq!(phase, &Some(ResponsePhase::Commentary)),
+        other => panic!("unexpected item: {other:?}"),
+    }
+    match &output[1] {
+        Item::Message { phase, .. } => assert_eq!(phase, &Some(ResponsePhase::FinalAnswer)),
+        other => panic!("unexpected item: {other:?}"),
+    }
+    assert_eq!(
+        response.output_modalities,
+        Some(OutputModalities::AudioText)
+    );
+
+    let serialized = serde_json::to_value(&response).expect("serialize response");
+    assert_eq!(
+        serialized.pointer("/output/0/phase"),
+        Some(&json!("commentary"))
+    );
+    assert_eq!(
+        serialized.pointer("/output/1/phase"),
+        Some(&json!("final_answer"))
+    );
+}
+
+#[test]
 fn test_serialization_roundtrip() {
     let original = json!({
         "type": "conversation.item.create",
@@ -374,6 +714,38 @@ fn test_session_struct_update() {
         Some("Test instructions")
     );
     assert_eq!(session.config.output_modalities, OutputModalities::Audio);
+}
+
+#[test]
+fn test_session_config_omits_none_optionals_for_client_secret_payloads() {
+    let config = SessionConfig::new(
+        SessionKind::Realtime,
+        GPT_REALTIME_2,
+        OutputModalities::Audio,
+    );
+
+    let serialized = serde_json::to_value(&config).expect("serialize session config");
+    let object = serialized.as_object().expect("session config object");
+
+    assert_eq!(object.get("type"), Some(&json!("realtime")));
+    assert_eq!(object.get("model"), Some(&json!(GPT_REALTIME_2)));
+    assert_eq!(object.get("output_modalities"), Some(&json!(["audio"])));
+    assert!(
+        !object.contains_key("instructions"),
+        "unset instructions should be omitted"
+    );
+    assert!(
+        !object.contains_key("audio"),
+        "unset audio should be omitted"
+    );
+    assert!(
+        !object.contains_key("reasoning"),
+        "unset reasoning should be omitted"
+    );
+    assert!(
+        !object.values().any(serde_json::Value::is_null),
+        "client secret session payload should not emit nulls for unset fields"
+    );
 }
 
 #[test]

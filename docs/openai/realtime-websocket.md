@@ -23,7 +23,7 @@ Connect using the ws module (Node.js)
 ```javascript
 import WebSocket from "ws";
 
-const url = "wss://api.openai.com/v1/realtime?model=gpt-realtime";
+const url = "wss://api.openai.com/v1/realtime?model=gpt-realtime-2";
 const ws = new WebSocket(url, {
   headers: {
     Authorization: "Bearer " + process.env.OPENAI_API_KEY,
@@ -53,7 +53,7 @@ import websocket
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 
-url = "wss://api.openai.com/v1/realtime?model=gpt-realtime"
+url = "wss://api.openai.com/v1/realtime?model=gpt-realtime-2"
 headers = ["Authorization: Bearer " + OPENAI_API_KEY]
 
 def on_open(ws):
@@ -86,7 +86,7 @@ Cloudflare Workers.
 */
 
 const ws = new WebSocket(
-  "wss://api.openai.com/v1/realtime?model=gpt-realtime",
+  "wss://api.openai.com/v1/realtime?model=gpt-realtime-2",
   [
     "realtime",
     // Auth
@@ -116,7 +116,7 @@ Over a WebSocket, you will both send and receive JSON-serialized events as strin
 ```javascript
 import WebSocket from "ws";
 
-const url = "wss://api.openai.com/v1/realtime?model=gpt-realtime";
+const url = "wss://api.openai.com/v1/realtime?model=gpt-realtime-2";
 const ws = new WebSocket(url, {
     headers: {
         Authorization: "Bearer " + process.env.OPENAI_API_KEY,
@@ -147,3 +147,11 @@ ws.on("message", function incoming(message) {
 The WebSocket interface is perhaps the lowest-level interface available to interact with a Realtime model, where you will be responsible for both sending and processing Base64-encoded audio chunks over the socket connection.
 
 To learn how to send and receive audio over Websockets, refer to the [Realtime conversations guide](/docs/guides/realtime-conversations#handling-audio-with-websockets).
+
+Session targets
+---------------
+
+Voice-agent sessions connect to `/v1/realtime?model=gpt-realtime-2`.
+Transcription sessions connect to `/v1/realtime?intent=transcription`.
+Translation sessions connect to
+`/v1/realtime/translations?model=gpt-realtime-translate`.

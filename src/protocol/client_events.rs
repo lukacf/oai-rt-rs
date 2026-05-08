@@ -1,4 +1,4 @@
-use super::models::{Item, ResponseConfig, SessionUpdate};
+use super::models::{Item, ResponseConfig, SessionUpdate, TranscriptionSessionUpdateConfig};
 use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -9,8 +9,21 @@ pub enum ClientEvent {
         event_id: Option<String>,
         session: Box<SessionUpdate>,
     },
+    #[serde(rename = "transcription_session.update")]
+    TranscriptionSessionUpdate {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        event_id: Option<String>,
+        #[serde(flatten)]
+        session: Box<TranscriptionSessionUpdateConfig>,
+    },
     #[serde(rename = "input_audio_buffer.append")]
     InputAudioBufferAppend {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        event_id: Option<String>,
+        audio: String,
+    },
+    #[serde(rename = "session.input_audio_buffer.append")]
+    SessionInputAudioBufferAppend {
         #[serde(skip_serializing_if = "Option::is_none")]
         event_id: Option<String>,
         audio: String,
