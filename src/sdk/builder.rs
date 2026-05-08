@@ -1,6 +1,7 @@
 use crate::protocol::models::{
-    AudioConfig, AudioFormat, InputAudioConfig, InputAudioTranscription, MaxTokens, NoiseReduction,
-    OutputAudioConfig, OutputModalities, SessionConfig, SessionKind, Temperature, ToolChoice,
+    AudioConfig, AudioFormat, GPT_REALTIME_TRANSLATE, GPT_REALTIME_WHISPER, InputAudioConfig,
+    InputAudioTranscription, MaxTokens, NoiseReduction, OutputAudioConfig, OutputModalities,
+    ReasoningConfig, ReasoningEffort, SessionConfig, SessionKind, Temperature, ToolChoice,
     TurnDetection,
 };
 use crate::{Error, Result};
@@ -18,6 +19,16 @@ impl Realtime {
         RealtimeBuilder::new()
     }
 
+    #[must_use]
+    pub fn translation_builder() -> RealtimeBuilder {
+        RealtimeBuilder::new().translation_session()
+    }
+
+    #[must_use]
+    pub fn transcription_builder() -> RealtimeBuilder {
+        RealtimeBuilder::new().transcription_session()
+    }
+
     /// Connect via WebSocket with defaults.
     ///
     /// # Errors
@@ -31,13 +42,16 @@ pub struct RealtimeBuilder {
     api_key: Option<String>,
     model: Option<String>,
     call_id: Option<String>,
+    safety_identifier: Option<String>,
     voice: Option<String>,
     session_kind: SessionKind,
     output_modalities: Option<OutputModalities>,
+    include: Vec<String>,
     instructions: Option<String>,
     tool_choice: Option<ToolChoice>,
     temperature: Option<Temperature>,
     max_output_tokens: Option<MaxTokens>,
+    reasoning: Option<ReasoningConfig>,
     audio: Option<AudioConfig>,
     auto_barge_in: bool,
     auto_tool_response: bool,
@@ -54,13 +68,16 @@ impl RealtimeBuilder {
             api_key: None,
             model: None,
             call_id: None,
+            safety_identifier: None,
             voice: None,
             session_kind: SessionKind::Realtime,
             output_modalities: None,
+            include: Vec::new(),
             instructions: None,
             tool_choice: None,
             temperature: None,
             max_output_tokens: None,
+            reasoning: None,
             audio: None,
             auto_barge_in: false,
             auto_tool_response: true,
@@ -90,6 +107,12 @@ impl RealtimeBuilder {
     }
 
     #[must_use]
+    pub fn safety_identifier(mut self, safety_identifier: impl Into<String>) -> Self {
+        self.safety_identifier = Some(safety_identifier.into());
+        self
+    }
+
+    #[must_use]
     pub fn voice(mut self, voice: impl Into<String>) -> Self {
         let voice = voice.into();
         self.voice = Some(voice.clone());
@@ -106,6 +129,7 @@ impl RealtimeBuilder {
                         format: None,
                         voice: output_voice,
                         speed: None,
+                        language: None,
                     }),
                 });
             }
@@ -122,6 +146,114 @@ impl RealtimeBuilder {
     #[must_use]
     pub const fn transcription_session(mut self) -> Self {
         self.session_kind = SessionKind::Transcription;
+        self
+    }
+
+    #[must_use]
+    pub fn translation_session(mut self) -> Self {
+        self.session_kind = SessionKind::Translation;
+        self.model
+            .get_or_insert_with(|| GPT_REALTIME_TRANSLATE.to_string());
+        self.output_modalities = Some(OutputModalities::Audio);
+        self
+    }
+
+    #[must_use]
+    pub fn transcription_model(mut self, model: impl Into<String>) -> Self {
+        let transcription = InputAudioTranscription {
+            model: Some(model.into()),
+            language: None,
+            prompt: None,
+        };
+        let audio = self.audio.get_or_insert_with(AudioConfig::default);
+        let input = audio.input.get_or_insert_with(InputAudioConfig::default);
+        input.transcription = Some(crate::protocol::models::Nullable::Value(transcription));
+        self
+    }
+
+    #[must_use]
+    pub fn transcription_language(mut self, language: impl Into<String>) -> Self {
+        let audio = self.audio.get_or_insert_with(AudioConfig::default);
+        let input = audio.input.get_or_insert_with(InputAudioConfig::default);
+        let transcription = input
+            .transcription
+            .get_or_insert_with(|| {
+                crate::protocol::models::Nullable::Value(InputAudioTranscription::default())
+            })
+            .as_ref()
+            .cloned()
+            .unwrap_or_default();
+        input.transcription = Some(crate::protocol::models::Nullable::Value(
+            InputAudioTranscription {
+                language: Some(language.into()),
+                ..transcription
+            },
+        ));
+        self
+    }
+
+    #[must_use]
+    pub fn transcription_prompt(mut self, prompt: impl Into<String>) -> Self {
+        let audio = self.audio.get_or_insert_with(AudioConfig::default);
+        let input = audio.input.get_or_insert_with(InputAudioConfig::default);
+        let transcription = input
+            .transcription
+            .get_or_insert_with(|| {
+                crate::protocol::models::Nullable::Value(InputAudioTranscription::default())
+            })
+            .as_ref()
+            .cloned()
+            .unwrap_or_default();
+        input.transcription = Some(crate::protocol::models::Nullable::Value(
+            InputAudioTranscription {
+                prompt: Some(prompt.into()),
+                ..transcription
+            },
+        ));
+        self
+    }
+
+    #[must_use]
+    pub fn include_transcription_logprobs(self) -> Self {
+        self.include("item.input_audio_transcription.logprobs")
+    }
+
+    #[must_use]
+    pub fn include(mut self, field: impl Into<String>) -> Self {
+        let field = field.into();
+        self.session_include_mut().push(field);
+        self
+    }
+
+    #[must_use]
+    pub fn input_noise_reduction(mut self, noise_reduction: NoiseReduction) -> Self {
+        let audio = self.audio.get_or_insert_with(AudioConfig::default);
+        let input = audio.input.get_or_insert_with(InputAudioConfig::default);
+        input.noise_reduction = Some(crate::protocol::models::Nullable::Value(noise_reduction));
+        self
+    }
+
+    #[must_use]
+    pub fn input_turn_detection(mut self, turn_detection: TurnDetection) -> Self {
+        let audio = self.audio.get_or_insert_with(AudioConfig::default);
+        let input = audio.input.get_or_insert_with(InputAudioConfig::default);
+        input.turn_detection = Some(crate::protocol::models::Nullable::Value(turn_detection));
+        self
+    }
+
+    #[must_use]
+    pub fn manual_turn_detection(mut self) -> Self {
+        let audio = self.audio.get_or_insert_with(AudioConfig::default);
+        let input = audio.input.get_or_insert_with(InputAudioConfig::default);
+        input.turn_detection = Some(crate::protocol::models::Nullable::Null);
+        self
+    }
+
+    #[must_use]
+    pub fn translation_language(mut self, language: impl Into<String>) -> Self {
+        let audio = self.audio.get_or_insert_with(AudioConfig::default);
+        let output = audio.output.get_or_insert_with(OutputAudioConfig::default);
+        output.language = Some(language.into());
         self
     }
 
@@ -146,6 +278,14 @@ impl RealtimeBuilder {
     #[must_use]
     pub const fn max_output_tokens(mut self, max_output_tokens: MaxTokens) -> Self {
         self.max_output_tokens = Some(max_output_tokens);
+        self
+    }
+
+    #[must_use]
+    pub const fn reasoning_effort(mut self, effort: ReasoningEffort) -> Self {
+        self.reasoning = Some(ReasoningConfig {
+            effort: Some(effort),
+        });
         self
     }
 
@@ -189,6 +329,12 @@ impl RealtimeBuilder {
     #[must_use]
     pub const fn output_text(mut self) -> Self {
         self.output_modalities = Some(OutputModalities::Text);
+        self
+    }
+
+    #[must_use]
+    pub const fn output_audio_text(mut self) -> Self {
+        self.output_modalities = Some(OutputModalities::AudioText);
         self
     }
 
@@ -290,6 +436,7 @@ impl RealtimeBuilder {
     }
 
     #[allow(clippy::result_large_err)]
+    #[allow(clippy::too_many_lines)]
     fn build(self) -> Result<SessionConfigSnapshot> {
         let api_key = self
             .api_key
@@ -303,19 +450,83 @@ impl RealtimeBuilder {
                 "call_id must not be empty".to_string(),
             ));
         }
+        if self
+            .safety_identifier
+            .as_ref()
+            .is_some_and(|identifier| identifier.trim().is_empty())
+        {
+            return Err(Error::InvalidClientEvent(
+                "safety_identifier must not be empty".to_string(),
+            ));
+        }
+        if self.session_kind == SessionKind::Translation
+            && self
+                .audio
+                .as_ref()
+                .and_then(|audio| audio.output.as_ref())
+                .and_then(|output| output.language.as_deref())
+                .is_some_and(|language| language.trim().is_empty())
+        {
+            return Err(Error::InvalidClientEvent(
+                "translation language must not be empty".to_string(),
+            ));
+        }
+        if self.session_kind == SessionKind::Transcription
+            && self
+                .audio
+                .as_ref()
+                .and_then(|audio| audio.input.as_ref())
+                .and_then(|input| input.transcription.as_ref())
+                .and_then(crate::protocol::models::Nullable::as_ref)
+                .and_then(|transcription| transcription.language.as_deref())
+                .is_some_and(|language| language.trim().is_empty())
+        {
+            return Err(Error::InvalidClientEvent(
+                "transcription language must not be empty".to_string(),
+            ));
+        }
         let model = self.model.clone();
         let output_modalities = self.output_modalities.unwrap_or(OutputModalities::Audio);
-        let model_name = self
-            .model
-            .unwrap_or_else(|| crate::protocol::models::DEFAULT_MODEL.to_string());
+        let model_name = self.model.unwrap_or_else(|| {
+            if self.session_kind == SessionKind::Transcription {
+                GPT_REALTIME_WHISPER.to_string()
+            } else {
+                crate::protocol::models::DEFAULT_MODEL.to_string()
+            }
+        });
 
         let mut session = SessionConfig::new(self.session_kind, model_name, output_modalities);
         session.instructions = self.instructions;
+        if !self.include.is_empty() {
+            session.include = Some(self.include);
+        }
         session.tool_choice = self.tool_choice;
         session.temperature = self.temperature;
         session.max_output_tokens = self.max_output_tokens;
+        session.reasoning = self.reasoning;
         if let Some(audio) = self.audio {
             session.audio = Some(audio);
+        }
+        if session.kind == SessionKind::Transcription {
+            let audio = session.audio.get_or_insert_with(AudioConfig::default);
+            let input = audio.input.get_or_insert_with(InputAudioConfig::default);
+            match &mut input.transcription {
+                Some(crate::protocol::models::Nullable::Value(transcription)) => {
+                    if transcription.model.is_none() {
+                        transcription.model = Some(GPT_REALTIME_WHISPER.to_string());
+                    }
+                }
+                Some(crate::protocol::models::Nullable::Null) => {}
+                None => {
+                    input.transcription = Some(crate::protocol::models::Nullable::Value(
+                        InputAudioTranscription {
+                            model: Some(GPT_REALTIME_WHISPER.to_string()),
+                            language: None,
+                            prompt: None,
+                        },
+                    ));
+                }
+            }
         }
 
         let dispatcher = if let Some(d) = self.dispatcher {
@@ -337,6 +548,7 @@ impl RealtimeBuilder {
             api_key,
             model,
             call_id: self.call_id,
+            safety_identifier: self.safety_identifier,
             session,
             handlers: self.handlers,
             dispatcher,
@@ -344,6 +556,10 @@ impl RealtimeBuilder {
             auto_tool_response: self.auto_tool_response,
             send_initial_session_update: self.send_initial_session_update,
         })
+    }
+
+    const fn session_include_mut(&mut self) -> &mut Vec<String> {
+        &mut self.include
     }
 
     /// Connect via WebSocket using the configured session.
@@ -387,6 +603,7 @@ impl VoiceSessionBuilder {
             format: Some(AudioFormat::pcm_24khz()),
             voice: None,
             speed: None,
+            language: None,
         };
         inner.output_modalities = Some(OutputModalities::Audio);
         inner.audio = Some(AudioConfig {
@@ -412,6 +629,12 @@ impl VoiceSessionBuilder {
     #[must_use]
     pub fn call_id(mut self, call_id: impl Into<String>) -> Self {
         self.inner = self.inner.call_id(call_id);
+        self
+    }
+
+    #[must_use]
+    pub fn safety_identifier(mut self, safety_identifier: impl Into<String>) -> Self {
+        self.inner = self.inner.safety_identifier(safety_identifier);
         self
     }
 
@@ -494,6 +717,12 @@ impl VoiceSessionBuilder {
     #[must_use]
     pub const fn auto_tool_response(mut self, enabled: bool) -> Self {
         self.inner.auto_tool_response = enabled;
+        self
+    }
+
+    #[must_use]
+    pub fn reasoning_effort(mut self, effort: ReasoningEffort) -> Self {
+        self.inner = self.inner.reasoning_effort(effort);
         self
     }
 
@@ -637,6 +866,121 @@ mod tests {
         assert!(matches!(
             err,
             Error::InvalidClientEvent(message) if message.contains("call_id")
+        ));
+    }
+
+    #[test]
+    fn translation_session_builds_dedicated_target() {
+        let snapshot = Realtime::translation_builder()
+            .api_key("test-key")
+            .translation_language("es")
+            .build()
+            .expect("translation snapshot");
+
+        assert_eq!(snapshot.session.kind, SessionKind::Translation);
+        assert!(matches!(
+            snapshot.connection_target(),
+            super::super::session::SessionConnectTarget::Translation(model)
+                if model == GPT_REALTIME_TRANSLATE
+        ));
+        assert_eq!(
+            snapshot
+                .session
+                .audio
+                .as_ref()
+                .and_then(|audio| audio.output.as_ref())
+                .and_then(|output| output.language.as_deref()),
+            Some("es")
+        );
+    }
+
+    #[test]
+    fn transcription_session_builds_intent_target_and_defaults_whisper() {
+        let snapshot = Realtime::transcription_builder()
+            .api_key("test-key")
+            .transcription_language("en")
+            .transcription_prompt("Keywords: systolic")
+            .include_transcription_logprobs()
+            .build()
+            .expect("transcription snapshot");
+
+        assert_eq!(snapshot.session.kind, SessionKind::Transcription);
+        assert!(matches!(
+            snapshot.connection_target(),
+            super::super::session::SessionConnectTarget::Transcription
+        ));
+        assert_eq!(snapshot.session.model, GPT_REALTIME_WHISPER);
+        assert_eq!(
+            snapshot
+                .session
+                .audio
+                .as_ref()
+                .and_then(|audio| audio.input.as_ref())
+                .and_then(|input| input.transcription.as_ref())
+                .and_then(crate::protocol::models::Nullable::as_ref)
+                .and_then(|transcription| transcription.model.as_deref()),
+            Some(GPT_REALTIME_WHISPER)
+        );
+        assert_eq!(
+            snapshot
+                .session
+                .audio
+                .as_ref()
+                .and_then(|audio| audio.input.as_ref())
+                .and_then(|input| input.transcription.as_ref())
+                .and_then(crate::protocol::models::Nullable::as_ref)
+                .and_then(|transcription| transcription.language.as_deref()),
+            Some("en")
+        );
+        assert_eq!(
+            snapshot.session.include.as_deref(),
+            Some(&["item.input_audio_transcription.logprobs".to_string()][..])
+        );
+    }
+
+    #[test]
+    fn reasoning_effort_is_copied_to_initial_session() {
+        let snapshot = RealtimeBuilder::new()
+            .api_key("test-key")
+            .reasoning_effort(ReasoningEffort::Low)
+            .build()
+            .expect("snapshot");
+
+        assert_eq!(
+            snapshot.session.reasoning.as_ref().and_then(|r| r.effort),
+            Some(ReasoningEffort::Low)
+        );
+    }
+
+    #[test]
+    fn safety_identifier_is_validated() {
+        let snapshot = RealtimeBuilder::new()
+            .api_key("test-key")
+            .safety_identifier("hashed-user")
+            .build()
+            .expect("snapshot");
+        assert_eq!(snapshot.safety_identifier.as_deref(), Some("hashed-user"));
+
+        let result = RealtimeBuilder::new()
+            .api_key("test-key")
+            .safety_identifier(" ")
+            .build();
+        assert!(matches!(
+            result,
+            Err(Error::InvalidClientEvent(message)) if message.contains("safety_identifier")
+        ));
+    }
+
+    #[test]
+    fn empty_translation_language_is_rejected() {
+        let result = Realtime::translation_builder()
+            .api_key("test-key")
+            .translation_language(" ")
+            .build();
+
+        assert!(matches!(
+            result,
+            Err(Error::InvalidClientEvent(message)) if message.contains("translation language")
         ));
     }
 }

@@ -2,8 +2,9 @@ use serde::ser::SerializeMap;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    AudioConfig, AudioFormat, InputAudioTranscription, MaxTokens, Modality, Nullable,
-    OutputModalities, PromptRef, Temperature, Tool, ToolChoice, TurnDetection, Voice,
+    AudioConfig, AudioFormat, InputAudioTranscription, MaxTokens, Modality, NoiseReduction,
+    Nullable, OutputModalities, PromptRef, ReasoningConfig, Temperature, Tool, ToolChoice,
+    TurnDetection, Voice,
 };
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -12,6 +13,7 @@ pub enum SessionKind {
     #[default]
     Realtime,
     Transcription,
+    Translation,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -74,22 +76,40 @@ pub struct SessionConfig {
     pub kind: SessionKind,
     pub model: String,
     pub output_modalities: OutputModalities,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub modalities: Option<Vec<Modality>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub include: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt: Option<PromptRef>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub truncation: Option<Truncation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub instructions: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub input_audio_format: Option<AudioFormat>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub output_audio_format: Option<AudioFormat>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub input_audio_transcription: Option<Nullable<InputAudioTranscription>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub turn_detection: Option<Nullable<TurnDetection>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<Tool>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<ToolChoice>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<Temperature>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<MaxTokens>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub audio: Option<AudioConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tracing: Option<Tracing>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub voice: Option<Voice>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<ReasoningConfig>,
 }
 
 impl SessionConfig {
@@ -119,6 +139,7 @@ impl SessionConfig {
             audio: None,
             tracing: None,
             voice: None,
+            reasoning: None,
         }
     }
 }
@@ -162,6 +183,8 @@ pub struct SessionUpdateConfig {
     pub tracing: Option<Tracing>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub voice: Option<Voice>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<ReasoningConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -179,6 +202,33 @@ pub struct SessionUpdate {
     /// Flattened to match the API's session.update JSON shape.
     #[serde(flatten)]
     pub config: SessionUpdateConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TranscriptionSessionUpdateConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_audio_format: Option<AudioFormat>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_audio_transcription: Option<Nullable<InputAudioTranscription>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turn_detection: Option<Nullable<TurnDetection>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_audio_noise_reduction: Option<Nullable<NoiseReduction>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub include: Option<Vec<String>>,
+}
+
+impl From<&SessionConfig> for TranscriptionSessionUpdateConfig {
+    fn from(config: &SessionConfig) -> Self {
+        let input = config.audio.as_ref().and_then(|audio| audio.input.as_ref());
+        Self {
+            input_audio_format: input.and_then(|input| input.format.clone()),
+            input_audio_transcription: input.and_then(|input| input.transcription.clone()),
+            turn_detection: input.and_then(|input| input.turn_detection.clone()),
+            input_audio_noise_reduction: input.and_then(|input| input.noise_reduction.clone()),
+            include: config.include.clone(),
+        }
+    }
 }
 
 impl Serialize for SessionUpdate {

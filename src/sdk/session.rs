@@ -1,7 +1,7 @@
 use crate::protocol::client_events::ClientEvent;
 use crate::protocol::models::{
     ContentPart, Item, ItemStatus, ResponseConfig, SessionConfig, SessionUpdate,
-    SessionUpdateConfig,
+    SessionUpdateConfig, TranscriptionSessionUpdateConfig,
 };
 use crate::protocol::server_events::ServerEvent;
 use crate::{Error, Result};
@@ -61,6 +61,7 @@ impl Session {
         let item = Item::Message {
             id: None,
             status: None,
+            phase: None,
             role: crate::protocol::models::Role::User,
             content: vec![ContentPart::InputText {
                 text: text.to_string(),
@@ -187,6 +188,38 @@ impl Session {
         self.send_event(event).await
     }
 
+    /// Append raw PCM16 bytes to a translation session.
+    ///
+    /// # Errors
+    /// Returns an error if encoding or send fails.
+    pub async fn translation_audio_append_bytes(&self, pcm_bytes: &[u8]) -> Result<()> {
+        if pcm_bytes.is_empty() {
+            return Ok(());
+        }
+        let encoded = general_purpose::STANDARD.encode(pcm_bytes);
+        let event = ClientEvent::SessionInputAudioBufferAppend {
+            event_id: None,
+            audio: encoded,
+        };
+        self.send_event(event).await
+    }
+
+    /// Append PCM16 samples to a translation session.
+    ///
+    /// # Errors
+    /// Returns an error if encoding or send fails.
+    pub async fn translation_audio_append_pcm16(&self, samples: &[i16]) -> Result<()> {
+        if samples.is_empty() {
+            return Ok(());
+        }
+
+        let mut buf = Vec::with_capacity(samples.len() * 2);
+        for sample in samples {
+            buf.extend_from_slice(&sample.to_le_bytes());
+        }
+        self.translation_audio_append_bytes(&buf).await
+    }
+
     /// Append raw PCM16 bytes and commit the buffer in one step.
     ///
     /// # Errors
@@ -297,12 +330,14 @@ impl Session {
         self.send_event(event).await
     }
 
-    /// Clear output audio and cancel any active response (barge-in).
+    /// Cancel any active response (barge-in).
+    ///
+    /// WebSocket sessions do not accept `output_audio_buffer.clear`; local
+    /// playback queues should be cleared by the application.
     ///
     /// # Errors
     /// Returns an error if the SDK is not fully initialized or the send fails.
     pub async fn barge_in(&self) -> Result<()> {
-        self.clear_output_audio().await?;
         let response_id = { self.active_response_id.lock().await.clone() };
         if let Some(id) = response_id {
             let event = ClientEvent::ResponseCancel {
@@ -358,6 +393,7 @@ impl Session {
         let item = Item::McpApprovalResponse {
             id: None,
             status: Some(ItemStatus::Completed),
+            phase: None,
             approval_request_id: approval_request_id.to_string(),
             approve,
             reason: reason.map(str::to_string),
@@ -519,6 +555,7 @@ struct EventContext<'a> {
     auto_tool_response: bool,
 }
 
+#[allow(clippy::too_many_lines)]
 async fn handle_server_event(
     evt: ServerEvent,
     ctx: &mut EventContext<'_>,
@@ -591,6 +628,7 @@ async fn handle_server_event(
                         .unwrap_or_else(|_| String::new());
                     let item = Item::FunctionCallOutput {
                         id: None,
+                        phase: None,
                         call_id: tool_result.call_id,
                         output,
                     };
@@ -612,6 +650,7 @@ async fn handle_server_event(
                     let output = serde_json::json!({ "error": err.to_string() }).to_string();
                     let item = Item::FunctionCallOutput {
                         id: None,
+                        phase: None,
                         call_id,
                         output,
                     };
@@ -882,9 +921,6 @@ async fn send_barge_in(ctx: &EventContext<'_>, transport: &mut Box<dyn Transport
         let mut guard = ctx.active_response_id.lock().await;
         guard.take()
     };
-    let _ = transport
-        .send(ClientEvent::OutputAudioBufferClear { event_id: None })
-        .await;
     if let Some(id) = response_id {
         let _ = transport
             .send(ClientEvent::ResponseCancel {
@@ -904,6 +940,7 @@ impl SessionHandle {
         let item = Item::Message {
             id: None,
             status: None,
+            phase: None,
             role: crate::protocol::models::Role::User,
             content: vec![ContentPart::InputText { text: text.into() }],
         };
@@ -917,13 +954,14 @@ impl SessionHandle {
         self.send_event(event).await
     }
 
-    /// Clear output audio and cancel any active response (barge-in).
+    /// Cancel any active response (barge-in).
+    ///
+    /// WebSocket sessions do not accept `output_audio_buffer.clear`; local
+    /// playback queues should be cleared by the application.
     ///
     /// # Errors
     /// Returns an error if the send fails.
     pub async fn barge_in(&self) -> Result<()> {
-        self.send_event(ClientEvent::OutputAudioBufferClear { event_id: None })
-            .await?;
         let (tx, rx) = oneshot::channel();
         self.sender
             .send(Command::GetActiveResponseId { respond: tx })
@@ -1010,6 +1048,7 @@ pub struct SessionConfigSnapshot {
     pub api_key: String,
     pub model: Option<String>,
     pub call_id: Option<String>,
+    pub safety_identifier: Option<String>,
     pub session: SessionConfig,
     pub handlers: EventHandlers,
     pub dispatcher: Arc<dyn ToolDispatcher>,
@@ -1022,11 +1061,23 @@ pub struct SessionConfigSnapshot {
 pub(super) enum SessionConnectTarget {
     Model(String),
     CallId(String),
+    Transcription,
+    Translation(String),
 }
 
 impl SessionConfigSnapshot {
     #[must_use]
     pub(super) fn connection_target(&self) -> SessionConnectTarget {
+        if self.session.kind == crate::protocol::models::SessionKind::Translation {
+            return SessionConnectTarget::Translation(
+                self.model
+                    .clone()
+                    .unwrap_or_else(|| crate::protocol::models::GPT_REALTIME_TRANSLATE.to_string()),
+            );
+        }
+        if self.session.kind == crate::protocol::models::SessionKind::Transcription {
+            return SessionConnectTarget::Transcription;
+        }
         self.call_id.clone().map_or_else(
             || {
                 SessionConnectTarget::Model(
@@ -1048,8 +1099,18 @@ impl SessionConfigSnapshot {
             self.auto_tool_response,
         );
         if self.send_initial_session_update {
-            let update = session_update_from_config(&self.session);
-            session.update_session(update).await?;
+            if self.session.kind == crate::protocol::models::SessionKind::Transcription {
+                let update = transcription_session_update_from_config(&self.session);
+                session
+                    .send_event(ClientEvent::TranscriptionSessionUpdate {
+                        event_id: None,
+                        session: Box::new(update),
+                    })
+                    .await?;
+            } else {
+                let update = session_update_from_config(&self.session);
+                session.update_session(update).await?;
+            }
         }
         Ok(session)
     }
@@ -1062,10 +1123,41 @@ impl SessionConfigSnapshot {
         let target = self.connection_target();
         let client = match &target {
             SessionConnectTarget::Model(model) => {
-                crate::RealtimeClient::connect(&self.api_key, Some(model.as_str()), None).await?
+                crate::RealtimeClient::connect_with_options(
+                    &self.api_key,
+                    crate::transport::ws::WsConnectOptions {
+                        model: Some(model.as_str()),
+                        safety_identifier: self.safety_identifier.as_deref(),
+                        ..crate::transport::ws::WsConnectOptions::default()
+                    },
+                )
+                .await?
             }
             SessionConnectTarget::CallId(call_id) => {
-                crate::RealtimeClient::connect(&self.api_key, None, Some(call_id.as_str())).await?
+                crate::RealtimeClient::connect_with_options(
+                    &self.api_key,
+                    crate::transport::ws::WsConnectOptions {
+                        call_id: Some(call_id.as_str()),
+                        safety_identifier: self.safety_identifier.as_deref(),
+                        ..crate::transport::ws::WsConnectOptions::default()
+                    },
+                )
+                .await?
+            }
+            SessionConnectTarget::Transcription => {
+                crate::RealtimeClient::connect_transcription(
+                    &self.api_key,
+                    self.safety_identifier.as_deref(),
+                )
+                .await?
+            }
+            SessionConnectTarget::Translation(model) => {
+                crate::RealtimeClient::connect_translation(
+                    &self.api_key,
+                    Some(model.as_str()),
+                    self.safety_identifier.as_deref(),
+                )
+                .await?
             }
         };
 
@@ -1095,8 +1187,15 @@ fn session_update_from_config(config: &SessionConfig) -> SessionUpdate {
             audio: config.audio.clone(),
             tracing: config.tracing.clone(),
             voice: config.voice.clone(),
+            reasoning: config.reasoning.clone(),
         },
     }
+}
+
+fn transcription_session_update_from_config(
+    config: &SessionConfig,
+) -> TranscriptionSessionUpdateConfig {
+    TranscriptionSessionUpdateConfig::from(config)
 }
 
 struct WsTransport {
@@ -1617,7 +1716,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn barge_in_sends_clear_and_cancel() {
+    async fn barge_in_sends_cancel() {
         let (event_tx, event_rx) = mpsc::channel(8);
         let (out_tx, mut out_rx) = mpsc::channel(8);
         let transport = Box::new(MockTransport {
@@ -1656,17 +1755,9 @@ mod tests {
         let _ = session.next_voice_event().await.unwrap();
         session.barge_in().await.unwrap();
 
-        let first = out_rx.recv().await.unwrap();
-        let second = out_rx.recv().await.unwrap();
-
-        assert!(
-            matches!(first, ClientEvent::OutputAudioBufferClear { .. })
-                || matches!(second, ClientEvent::OutputAudioBufferClear { .. })
-        );
-        assert!(
-            matches!(first, ClientEvent::ResponseCancel { .. })
-                || matches!(second, ClientEvent::ResponseCancel { .. })
-        );
+        let event = out_rx.recv().await.unwrap();
+        assert!(matches!(event, ClientEvent::ResponseCancel { .. }));
+        assert!(out_rx.try_recv().is_err());
     }
 
     #[tokio::test]
@@ -1710,17 +1801,9 @@ mod tests {
         event_tx.send(speech).await.unwrap();
         let _ = session.next_voice_event().await.unwrap();
 
-        let first = out_rx.recv().await.unwrap();
-        let second = out_rx.recv().await.unwrap();
-
-        assert!(
-            matches!(first, ClientEvent::OutputAudioBufferClear { .. })
-                || matches!(second, ClientEvent::OutputAudioBufferClear { .. })
-        );
-        assert!(
-            matches!(first, ClientEvent::ResponseCancel { .. })
-                || matches!(second, ClientEvent::ResponseCancel { .. })
-        );
+        let event = out_rx.recv().await.unwrap();
+        assert!(matches!(event, ClientEvent::ResponseCancel { .. }));
+        assert!(out_rx.try_recv().is_err());
     }
 
     #[tokio::test]
@@ -1870,6 +1953,7 @@ mod tests {
             api_key: "test-key".to_string(),
             model: Some("gpt-realtime".to_string()),
             call_id: Some("call_123".to_string()),
+            safety_identifier: None,
             session: SessionConfig::new(
                 crate::protocol::models::SessionKind::Realtime,
                 "gpt-realtime".to_string(),
@@ -1900,5 +1984,135 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(matches!(sent, ClientEvent::ResponseCreate { .. }));
+    }
+
+    #[tokio::test]
+    async fn transcription_connect_sends_transcription_session_update() {
+        let (_event_tx, event_rx) = mpsc::channel(8);
+        let (out_tx, mut out_rx) = mpsc::channel(8);
+        let transport = Box::new(MockTransport {
+            incoming: event_rx,
+            outgoing: out_tx,
+        });
+
+        let mut session_config = SessionConfig::new(
+            crate::protocol::models::SessionKind::Transcription,
+            crate::protocol::models::GPT_REALTIME_WHISPER,
+            crate::protocol::models::OutputModalities::Audio,
+        );
+        session_config.audio = Some(crate::protocol::models::AudioConfig {
+            input: Some(crate::protocol::models::InputAudioConfig {
+                format: Some(crate::protocol::models::AudioFormat::pcm_24khz()),
+                turn_detection: None,
+                transcription: Some(crate::protocol::models::Nullable::Value(
+                    crate::protocol::models::InputAudioTranscription {
+                        model: Some(crate::protocol::models::GPT_REALTIME_WHISPER.to_string()),
+                        language: Some("en".to_string()),
+                        prompt: None,
+                    },
+                )),
+                noise_reduction: None,
+            }),
+            output: None,
+        });
+
+        let snapshot = SessionConfigSnapshot {
+            api_key: "test-key".to_string(),
+            model: None,
+            call_id: None,
+            safety_identifier: None,
+            session: session_config,
+            handlers: EventHandlers::new(),
+            dispatcher: Arc::new(ToolRegistry::new()),
+            auto_barge_in: false,
+            auto_tool_response: false,
+            send_initial_session_update: true,
+        };
+
+        let _session = snapshot
+            .connect_with_transport(transport)
+            .await
+            .expect("transcription session");
+
+        let sent = tokio::time::timeout(std::time::Duration::from_secs(1), out_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        match sent {
+            ClientEvent::TranscriptionSessionUpdate { session, .. } => {
+                assert_eq!(
+                    session
+                        .input_audio_transcription
+                        .as_ref()
+                        .and_then(crate::protocol::models::Nullable::as_ref)
+                        .and_then(|transcription| transcription.model.as_deref()),
+                    Some(crate::protocol::models::GPT_REALTIME_WHISPER)
+                );
+            }
+            other => panic!("unexpected initial event: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn translation_audio_append_uses_translation_event_type() {
+        let (_event_tx, event_rx) = mpsc::channel(8);
+        let (out_tx, mut out_rx) = mpsc::channel(8);
+        let transport = Box::new(MockTransport {
+            incoming: event_rx,
+            outgoing: out_tx,
+        });
+
+        let tools = ToolRegistry::new();
+        let session = Session::from_transport(
+            transport,
+            EventHandlers::new(),
+            Arc::new(tools),
+            false,
+            false,
+        );
+
+        session
+            .translation_audio_append_pcm16(&[1, 2])
+            .await
+            .expect("append translation audio");
+
+        let sent = out_rx.recv().await.expect("sent event");
+        assert!(matches!(
+            sent,
+            ClientEvent::SessionInputAudioBufferAppend { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn translation_events_map_to_sdk_events() {
+        let (event_tx, event_rx) = mpsc::channel(8);
+        let (out_tx, _out_rx) = mpsc::channel(8);
+        let transport = Box::new(MockTransport {
+            incoming: event_rx,
+            outgoing: out_tx,
+        });
+
+        let tools = ToolRegistry::new();
+        let mut session = Session::from_transport(
+            transport,
+            EventHandlers::new(),
+            Arc::new(tools),
+            false,
+            false,
+        );
+
+        event_tx
+            .send(ServerEvent::SessionOutputTranscriptDelta {
+                event_id: None,
+                delta: "hola".to_string(),
+            })
+            .await
+            .unwrap();
+
+        let mapped = session.next_event().await.unwrap().expect("sdk event");
+        match mapped {
+            SdkEvent::TranslationOutputTranscriptDelta { delta } => assert_eq!(delta, "hola"),
+            other => panic!("unexpected event: {other:?}"),
+        }
     }
 }

@@ -1,0 +1,961 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>oai-rt-rs · realtime · tools</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%231C1A17'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg:        #ECEAE4;
+  --surface:   #F6F4EE;
+  --paper:     #FAF8F2;
+  --ink:       #1C1A17;
+  --muted:     #6B6760;
+  --subtle:    #A8A49B;
+  --hair:      #D6D2C8;
+  --ink-soft:  rgba(28, 26, 23, 0.04);
+
+  --accent:      #D95A1E;
+  --accent-soft: rgba(217, 90, 30, 0.08);
+  --danger:      #C23A1A;
+  --danger-bg:   rgba(194, 58, 26, 0.08);
+
+  --ok:    oklch(0.58 0.14 150);
+  --warn:  oklch(0.65 0.16 70);
+
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --pad-x: clamp(20px, 3.2vw, 40px);
+  --top-h: 56px;
+  --rail-h: 44px;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  font: 400 13px/1.5 var(--font-sans);
+  letter-spacing: -0.003em;
+  color: var(--ink);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: "ss01", "cv11";
+  min-height: 100vh;
+}
+
+/* ───── System-voice utilities ─────────────────────────────────── */
+.eyebrow {
+  font: 500 10.5px/1.4 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.label-mono {
+  font: 500 10px/1.4 var(--font-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.meta-mono {
+  font: 400 11px/1.45 var(--font-mono);
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  font-feature-settings: "tnum" 1;
+  white-space: nowrap;
+}
+
+/* ───── Top rail ───────────────────────────────────────────────── */
+.rail {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  height: var(--top-h);
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 24px;
+  padding: 0 var(--pad-x);
+  background: var(--surface);
+  border-bottom: 1px solid var(--ink);
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font: 500 11px/1 var(--font-mono);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink);
+  white-space: nowrap;
+  min-width: 0;
+}
+.brand > span { white-space: nowrap; }
+.brand__mark {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  background: var(--ink);
+}
+.brand__sep { color: var(--subtle); margin: 0 4px; }
+.brand__sub { color: var(--muted); }
+
+.status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-self: center;
+  white-space: nowrap;
+}
+.status__dot {
+  width: 6px;
+  height: 6px;
+  background: var(--subtle);
+  display: inline-block;
+}
+.status[data-state="live"]    .status__dot { background: var(--ok); }
+.status[data-state="error"]   .status__dot { background: var(--danger); }
+.status[data-state="pending"] .status__dot {
+  background: var(--warn);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.35; }
+}
+#status-text { color: var(--ink); }
+
+.actions {
+  display: flex;
+  gap: 0;
+  justify-self: end;
+}
+
+/* ───── Buttons ────────────────────────────────────────────────── */
+.btn {
+  font: 500 13px/1 var(--font-sans);
+  letter-spacing: -0.003em;
+  color: var(--ink);
+  background: transparent;
+  border: 1px solid var(--ink);
+  padding: 9px 16px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--motion-fast, 80ms linear);
+}
+.btn + .btn { border-left: 0; }
+.btn:hover:not(:disabled) { background: var(--ink-soft); }
+.btn:disabled {
+  color: var(--subtle);
+  border-color: var(--hair);
+  cursor: not-allowed;
+}
+.btn--primary {
+  background: var(--ink);
+  color: var(--surface);
+}
+.btn--primary:hover:not(:disabled) { background: #2C2924; }
+
+/* ───── Layout grid ────────────────────────────────────────────── */
+.app {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+.body {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  min-height: 0;
+}
+.body > .stream { border-right: 1px solid var(--hair); }
+@media (max-width: 1024px) {
+  .body { grid-template-columns: 1fr; }
+  .body > .stream { border-right: 0; border-bottom: 1px solid var(--hair); }
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.section__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 18px var(--pad-x) 12px;
+  border-bottom: 1px solid var(--hair);
+  position: sticky;
+  top: var(--top-h);
+  background: var(--bg);
+  z-index: 5;
+}
+.section__head .eyebrow { color: var(--ink); }
+.section__count { color: var(--muted); }
+
+/* ───── Transcript turns ───────────────────────────────────────── */
+.turns {
+  padding: 0 var(--pad-x) 120px;
+  overflow-y: auto;
+}
+.turn {
+  display: grid;
+  grid-template-columns: 88px 1fr;
+  gap: 24px;
+  padding: 18px 0;
+  border-bottom: 1px solid var(--hair);
+}
+.turn:last-child { border-bottom: 0; }
+.turn__rail { display: flex; flex-direction: column; gap: 4px; }
+.turn__role { color: var(--muted); }
+.turn--user .turn__role { color: var(--ink); }
+.turn--assistant .turn__role { color: var(--accent); }
+.turn__time { color: var(--subtle); }
+
+.turn__body {
+  font: 400 15px/1.55 var(--font-sans);
+  letter-spacing: -0.005em;
+  color: var(--ink);
+  white-space: pre-wrap;
+  text-wrap: pretty;
+}
+.turn__body--draft::after {
+  content: "▍";
+  display: inline-block;
+  margin-left: 2px;
+  color: var(--accent);
+  animation: blink 1s steps(2) infinite;
+  font-weight: 400;
+}
+@keyframes blink { 50% { opacity: 0; } }
+
+.empty {
+  padding: 40px 0 80px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.empty__title {
+  font: 500 18px/1.25 var(--font-sans);
+  letter-spacing: -0.015em;
+  color: var(--ink);
+}
+.empty__body {
+  color: var(--muted);
+  max-width: 48ch;
+}
+.empty .label-mono { color: var(--subtle); margin-bottom: 8px; }
+
+/* ───── Side panel ─────────────────────────────────────────────── */
+.side {
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  min-height: 0;
+}
+.side > .panel + .panel {
+  border-top: 1px solid var(--hair);
+}
+.panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.panel__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 18px var(--pad-x) 12px;
+  border-bottom: 1px solid var(--hair);
+  position: sticky;
+  top: var(--top-h);
+  background: var(--surface);
+  z-index: 4;
+}
+.panel__head .eyebrow { color: var(--ink); }
+.panel__count { color: var(--muted); }
+.panel__body {
+  padding: 0 var(--pad-x);
+  overflow-y: auto;
+  max-height: 50vh;
+}
+
+/* Tool entries */
+.tool {
+  padding: 14px 0;
+  border-bottom: 1px solid var(--hair);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.tool:last-child { border-bottom: 0; }
+.tool__head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+.tool__name {
+  font: 500 11px/1.2 var(--font-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink);
+}
+.tool__time { margin-left: auto; }
+.tool__status {
+  font: 500 10px/1.2 var(--font-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 3px 6px;
+  background: var(--ink-soft);
+  color: var(--muted);
+}
+.tool__status--ok  { color: var(--ok); }
+.tool__status--err { color: var(--danger); background: var(--danger-bg); }
+.tool__row {
+  display: grid;
+  grid-template-columns: 64px 1fr;
+  gap: 10px;
+  align-items: baseline;
+}
+.tool__row .label-mono { color: var(--subtle); }
+.tool__row code {
+  font: 400 12px/1.45 var(--font-mono);
+  color: var(--ink);
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+/* Citations */
+.citation {
+  display: grid;
+  grid-template-columns: 28px 1fr;
+  column-gap: 12px;
+  row-gap: 2px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--hair);
+  text-decoration: none;
+  color: var(--ink);
+  transition: background var(--motion-hover, 100ms ease);
+}
+.citation:last-child { border-bottom: 0; }
+.citation:hover { background: var(--ink-soft); }
+.citation__num   { color: var(--subtle); font: 400 11px/1.45 var(--font-mono); padding-top: 2px; }
+.citation__title { font: 500 13px/1.35 var(--font-sans); color: var(--ink); }
+.citation__url   { color: var(--muted); grid-column: 2; word-break: break-all; }
+
+/* ───── Composer rail (footer) ────────────────────────────────── */
+.composer {
+  position: sticky;
+  bottom: 0;
+  z-index: 8;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  height: var(--rail-h);
+  padding: 0 var(--pad-x);
+  background: var(--surface);
+  border-top: 1px solid var(--ink);
+  gap: 16px;
+}
+.composer__left  { display: flex; align-items: center; gap: 12px; }
+.composer__center { justify-self: center; display: flex; align-items: center; gap: 10px; }
+.composer__right { justify-self: end; display: flex; align-items: center; gap: 12px; color: var(--subtle); }
+.kbd {
+  font: 500 10px/1.2 var(--font-mono);
+  letter-spacing: 0.06em;
+  padding: 3px 6px;
+  border: 1px solid var(--hair);
+  color: var(--muted);
+  background: var(--paper);
+}
+
+/* Mic level meter */
+.meter {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 14px;
+}
+.meter span {
+  display: inline-block;
+  width: 2px;
+  background: var(--subtle);
+}
+.meter span:nth-child(1) { height: 4px; }
+.meter span:nth-child(2) { height: 8px; }
+.meter span:nth-child(3) { height: 12px; }
+.meter span:nth-child(4) { height: 8px; }
+.meter span:nth-child(5) { height: 4px; }
+.composer[data-live="true"] .meter span {
+  background: var(--accent);
+  animation: bars 0.8s ease-in-out infinite;
+}
+.composer[data-live="true"] .meter span:nth-child(2) { animation-delay: 0.1s; }
+.composer[data-live="true"] .meter span:nth-child(3) { animation-delay: 0.2s; }
+.composer[data-live="true"] .meter span:nth-child(4) { animation-delay: 0.3s; }
+.composer[data-live="true"] .meter span:nth-child(5) { animation-delay: 0.4s; }
+@keyframes bars {
+  0%, 100% { transform: scaleY(1); }
+  50%      { transform: scaleY(0.4); }
+}
+
+/* Audio element off-canvas (we still use it). */
+audio { display: none; }
+
+/* Tablet adjustments */
+@media (max-width: 720px) {
+  .rail { grid-template-columns: auto 1fr; }
+  .actions { grid-column: 1 / -1; padding: 8px var(--pad-x); border-top: 1px solid var(--hair); justify-self: stretch; }
+  .turn { grid-template-columns: 1fr; gap: 6px; }
+  .turn__rail { flex-direction: row; gap: 12px; }
+}
+</style>
+</head>
+<body>
+  <div class="app">
+
+    <header class="rail">
+      <div class="brand">
+        <span class="brand__mark"></span>
+        <span>oai-rt-rs</span>
+        <span class="brand__sep">·</span>
+        <span class="brand__sub">realtime · tools</span>
+      </div>
+      <div class="status" data-state="idle" id="status">
+        <span class="status__dot"></span>
+        <span class="meta-mono" id="status-text">IDLE</span>
+      </div>
+      <div class="actions">
+        <button id="start" class="btn btn--primary">Start microphone</button>
+        <button id="stop"  class="btn" disabled>Stop</button>
+      </div>
+    </header>
+
+    <main class="body">
+      <section class="section stream">
+        <header class="section__head">
+          <span class="eyebrow">Transcript</span>
+          <span class="meta-mono section__count" id="turn-count">0 turns</span>
+        </header>
+        <div class="turns" id="turns">
+          <div class="empty" id="empty-turns">
+            <span class="label-mono">No turns yet</span>
+            <div class="empty__title">Start the microphone to begin</div>
+            <div class="empty__body">
+              Try arithmetic ("what's forty-seven plus twenty-three") or current
+              web information ("who won the F1 race in São Paulo last weekend").
+              Tools fire automatically; results land in the panel to the right.
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <aside class="side">
+        <section class="panel">
+          <header class="panel__head">
+            <span class="eyebrow">Tool calls</span>
+            <span class="meta-mono panel__count" id="tool-count">0</span>
+          </header>
+          <div class="panel__body" id="tools">
+            <div class="empty">
+              <span class="label-mono">Nothing yet</span>
+              <div class="empty__body" style="font-size: 12px;">Calls to <code>sum</code> and <code>web_search</code> will appear here.</div>
+            </div>
+          </div>
+        </section>
+        <section class="panel">
+          <header class="panel__head">
+            <span class="eyebrow">Citations</span>
+            <span class="meta-mono panel__count" id="citation-count">0</span>
+          </header>
+          <div class="panel__body" id="citations">
+            <div class="empty">
+              <span class="label-mono">Nothing yet</span>
+              <div class="empty__body" style="font-size: 12px;">Web-search results will list source links here.</div>
+            </div>
+          </div>
+        </section>
+      </aside>
+    </main>
+
+    <footer class="composer" id="composer" data-live="false">
+      <div class="composer__left">
+        <span class="meta-mono">Session</span>
+        <span class="meta-mono" id="session-id" style="color: var(--ink);">—</span>
+      </div>
+      <div class="composer__center">
+        <span class="meter"><span></span><span></span><span></span><span></span><span></span></span>
+        <span class="meta-mono" id="mic-state">microphone idle</span>
+      </div>
+      <div class="composer__right">
+        <span class="meta-mono">Toggle mic</span>
+        <span class="kbd">⌥</span>
+        <span class="kbd">SPACE</span>
+      </div>
+    </footer>
+
+    <audio id="remote" autoplay></audio>
+  </div>
+
+<script>
+const REALTIME_CALLS_URL = "https://api.openai.com/v1/realtime/calls";
+const DEMO = new URLSearchParams(location.search).has("demo");
+
+let pc, dc, localStream;
+const userTurns = [];      // committed user transcripts
+let   userDraft  = "";     // streaming user
+const assistantTurns = []; // committed assistant transcripts
+let   assistantDraft = ""; // streaming assistant
+let   currentSpeaker = null; // "user" | "assistant" — for ordering
+const turnLog = [];        // ordered list: { role, text, time, draft? }
+const toolCalls = new Map();
+const toolLog = [];        // ordered tool entries
+const citationList = [];
+
+const $ = (id) => document.getElementById(id);
+const setStatus = (state, text) => {
+  $("status").dataset.state = state;
+  $("status-text").textContent = text.toUpperCase();
+};
+const setMic = (text, live = false) => {
+  $("mic-state").textContent = text;
+  $("composer").dataset.live = live ? "true" : "false";
+};
+const fmtTime = (d = new Date()) =>
+  `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}:${String(d.getSeconds()).padStart(2, "0")}`;
+
+setStatus("idle", "idle");
+
+/* ────────────────────────────────────────────────────────────── */
+/*  Wire up start/stop                                            */
+/* ────────────────────────────────────────────────────────────── */
+$("start").onclick = async () => {
+  $("start").disabled = true;
+  if (DEMO) { runDemo(); return; }
+  try {
+    setStatus("pending", "minting session");
+    const token = await fetchJson("/session/voice");
+    $("session-id").textContent = (token.session_id || token.id || "active").slice(0, 12);
+
+    pc = new RTCPeerConnection();
+    pc.ontrack = (event) => $("remote").srcObject = event.streams[0];
+    dc = pc.createDataChannel("oai-events");
+    dc.onopen = () => {
+      setStatus("live", "live");
+      setMic("listening", true);
+    };
+    dc.onmessage = (message) => handleEvent(JSON.parse(message.data));
+
+    localStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      },
+    });
+    pc.addTrack(localStream.getAudioTracks()[0]);
+
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    const answerSdp = await fetchText(REALTIME_CALLS_URL, {
+      method: "POST",
+      body: offer.sdp,
+      headers: {
+        Authorization: `Bearer ${token.value}`,
+        "Content-Type": "application/sdp",
+      },
+    });
+    await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
+    $("stop").disabled = false;
+  } catch (error) {
+    setStatus("error", `error · ${error.message}`);
+    setMic("microphone idle");
+    $("start").disabled = false;
+  }
+};
+
+$("stop").onclick = () => {
+  dc?.close();
+  pc?.close();
+  localStream?.getTracks().forEach((track) => track.stop());
+  $("start").disabled = false;
+  $("stop").disabled = true;
+  setStatus("idle", "stopped");
+  setMic("microphone idle");
+};
+
+/* ────────────────────────────────────────────────────────────── */
+/*  Realtime event router                                         */
+/* ────────────────────────────────────────────────────────────── */
+function handleEvent(event) {
+  switch (event.type) {
+    case "response.created":
+      assistantDraft = "";
+      currentSpeaker = "assistant";
+      ensureDraftTurn("assistant");
+      break;
+
+    case "input_audio_buffer.speech_started":
+      userDraft = "";
+      currentSpeaker = "user";
+      ensureDraftTurn("user");
+      break;
+
+    case "conversation.item.input_audio_transcription.delta":
+    case "input_audio_transcription.delta":
+      userDraft += event.delta || "";
+      updateDraftTurn("user", userDraft);
+      break;
+
+    case "conversation.item.input_audio_transcription.completed":
+    case "input_audio_transcription.completed":
+      if (event.transcript) {
+        userTurns.push(event.transcript);
+        commitDraftTurn("user", event.transcript);
+      } else {
+        commitDraftTurn("user", userDraft);
+      }
+      userDraft = "";
+      break;
+
+    case "response.output_audio_transcript.delta":
+    case "response.output_text.delta":
+    case "response.audio_transcript.delta":
+      assistantDraft += event.delta || "";
+      updateDraftTurn("assistant", assistantDraft);
+      break;
+
+    case "response.output_audio_transcript.done":
+    case "response.output_text.done":
+    case "response.audio_transcript.done":
+      const finalText = event.transcript || event.text || assistantDraft;
+      if (finalText) {
+        assistantTurns.push(finalText);
+        commitDraftTurn("assistant", finalText);
+      }
+      assistantDraft = "";
+      break;
+
+    case "conversation.item.done":
+      collectDoneItemTranscripts(event.item);
+      break;
+
+    case "response.function_call_arguments.delta":
+      collectToolDelta(event);
+      break;
+
+    case "response.function_call_arguments.done":
+      runTool(event);
+      break;
+
+    case "response.done":
+      setStatus("live", "ready");
+      break;
+
+    case "error":
+      setStatus("error", `error · ${event.error?.message || "unknown error"}`);
+      break;
+  }
+}
+
+/* ────────────────────────────────────────────────────────────── */
+/*  Transcript rendering                                          */
+/* ────────────────────────────────────────────────────────────── */
+function ensureDraftTurn(role) {
+  // If the last entry is a draft of the same role, keep it; else add a new one.
+  const last = turnLog[turnLog.length - 1];
+  if (last && last.role === role && last.draft) return;
+  turnLog.push({ role, text: "", time: fmtTime(), draft: true });
+  renderTurns();
+}
+function updateDraftTurn(role, text) {
+  for (let i = turnLog.length - 1; i >= 0; i--) {
+    if (turnLog[i].role === role && turnLog[i].draft) {
+      turnLog[i].text = text;
+      renderTurns();
+      return;
+    }
+  }
+  turnLog.push({ role, text, time: fmtTime(), draft: true });
+  renderTurns();
+}
+function commitDraftTurn(role, text) {
+  for (let i = turnLog.length - 1; i >= 0; i--) {
+    if (turnLog[i].role === role && turnLog[i].draft) {
+      turnLog[i].text = text;
+      turnLog[i].draft = false;
+      renderTurns();
+      return;
+    }
+  }
+  turnLog.push({ role, text, time: fmtTime(), draft: false });
+  renderTurns();
+}
+
+function renderTurns() {
+  const root = $("turns");
+  if (turnLog.length === 0) {
+    return; /* keep the empty state */
+  }
+  $("empty-turns")?.remove();
+  root.innerHTML = "";
+  for (const turn of turnLog) {
+    const el = document.createElement("div");
+    el.className = `turn turn--${turn.role}`;
+    el.innerHTML = `
+      <div class="turn__rail">
+        <span class="label-mono turn__role">${turn.role.toUpperCase()}</span>
+        <span class="meta-mono turn__time">${turn.time}</span>
+      </div>
+      <div class="turn__body${turn.draft ? " turn__body--draft" : ""}"></div>
+    `;
+    el.querySelector(".turn__body").textContent = turn.text || "";
+    root.appendChild(el);
+  }
+  $("turn-count").textContent = `${turnLog.filter(t => !t.draft).length} turns`;
+  // Auto-scroll to latest
+  root.scrollTop = root.scrollHeight;
+}
+
+function collectDoneItemTranscripts(item) {
+  if (!item || !Array.isArray(item.content)) return;
+  const parts = item.content
+    .map((part) => part.transcript || part.text || "")
+    .filter(Boolean);
+  if (parts.length === 0) return;
+  const text = parts.join("");
+  if (item.role === "user") {
+    if (!userTurns.includes(text)) {
+      userTurns.push(text);
+      commitDraftTurn("user", text);
+    }
+  } else if (item.role === "assistant") {
+    if (!assistantTurns.includes(text)) {
+      assistantTurns.push(text);
+      commitDraftTurn("assistant", text);
+    }
+  }
+}
+
+/* ────────────────────────────────────────────────────────────── */
+/*  Tool plumbing                                                 */
+/* ────────────────────────────────────────────────────────────── */
+function collectToolDelta(event) {
+  const key = event.call_id || event.item_id || "pending";
+  const call = toolCalls.get(key) || { name: event.name || "tool", arguments: "" };
+  call.name = event.name || call.name;
+  call.arguments += event.delta || "";
+  toolCalls.set(key, call);
+}
+
+async function runTool(event) {
+  const key = event.call_id || event.item_id || "pending";
+  const collected = toolCalls.get(key);
+  const rawArguments = event.arguments || collected?.arguments || "{}";
+  const args = safeJsonParse(rawArguments);
+  const name = event.name || collected?.name || "tool";
+  toolCalls.set(key, { name, arguments: rawArguments });
+  try {
+    if (name === "sum") {
+      await runSumTool(event, args);
+    } else if (name === "web_search") {
+      await runWebSearchTool(event, args);
+    } else {
+      logTool({ name, args, status: "err", note: "unknown tool" });
+      sendToolOutput(event.call_id, { error: `unknown tool: ${name}` });
+    }
+  } catch (error) {
+    logTool({ name, args, status: "err", note: error.message });
+    sendToolOutput(event.call_id, { error: error.message });
+  }
+  toolCalls.delete(key);
+  sendEvent({ type: "response.create" });
+}
+
+async function runSumTool(event, args) {
+  const result = Number(args.a) + Number(args.b);
+  logTool({ name: "sum", args, result, status: "ok" });
+  sendToolOutput(event.call_id, { result });
+}
+
+async function runWebSearchTool(event, args) {
+  const query = String(args.query || "").trim();
+  if (!query) throw new Error("web_search query must not be empty");
+  logTool({ name: "web_search", args, status: "pending", note: "searching" });
+  const result = await fetchJson("/tools/web_search", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query }),
+  });
+  logTool({
+    name: "web_search",
+    args,
+    result: `${result.citations?.length || 0} citation(s)`,
+    status: "ok",
+  });
+  renderCitations(result.citations || []);
+  sendToolOutput(event.call_id, result);
+}
+
+function logTool(entry) {
+  toolLog.push({ ...entry, time: fmtTime() });
+  renderTools();
+}
+
+function renderTools() {
+  const root = $("tools");
+  if (toolLog.length === 0) return;
+  root.innerHTML = "";
+  for (const entry of toolLog) {
+    const el = document.createElement("div");
+    el.className = "tool";
+    const argText = formatArgs(entry.args);
+    const resultText = entry.result !== undefined
+      ? String(entry.result)
+      : (entry.note || "—");
+    const statusClass =
+      entry.status === "err" ? "tool__status--err" :
+      entry.status === "ok"  ? "tool__status--ok"  : "";
+    el.innerHTML = `
+      <div class="tool__head">
+        <span class="tool__name"></span>
+        <span class="tool__status ${statusClass}"></span>
+        <span class="meta-mono tool__time"></span>
+      </div>
+      <div class="tool__row">
+        <span class="label-mono">Args</span>
+        <code></code>
+      </div>
+      <div class="tool__row">
+        <span class="label-mono">Result</span>
+        <code></code>
+      </div>
+    `;
+    el.querySelector(".tool__name").textContent = entry.name;
+    el.querySelector(".tool__status").textContent = entry.status;
+    el.querySelector(".tool__time").textContent = entry.time;
+    el.querySelectorAll("code")[0].textContent = argText;
+    el.querySelectorAll("code")[1].textContent = resultText;
+    root.appendChild(el);
+  }
+  $("tool-count").textContent = `${toolLog.length}`;
+  root.scrollTop = root.scrollHeight;
+}
+
+function formatArgs(args) {
+  if (!args || typeof args !== "object") return String(args ?? "");
+  const entries = Object.entries(args);
+  if (entries.length === 0) return "—";
+  return entries.map(([k, v]) => `${k}=${typeof v === "string" ? `"${v}"` : v}`).join("  ");
+}
+
+function renderCitations(citations) {
+  if (!citations || citations.length === 0) return;
+  citationList.push(...citations);
+  const root = $("citations");
+  root.innerHTML = "";
+  citationList.forEach((c, i) => {
+    const a = document.createElement("a");
+    a.className = "citation";
+    a.href = c.url || "#";
+    a.target = "_blank";
+    a.rel = "noreferrer";
+    a.innerHTML = `
+      <span class="citation__num"></span>
+      <span class="citation__title"></span>
+      <span class="meta-mono citation__url"></span>
+    `;
+    a.querySelector(".citation__num").textContent = String(i + 1).padStart(2, "0");
+    a.querySelector(".citation__title").textContent = c.title || c.url || "(untitled)";
+    a.querySelector(".citation__url").textContent =
+      (c.url || "").replace(/^https?:\/\//, "").replace(/\/$/, "");
+    root.appendChild(a);
+  });
+  $("citation-count").textContent = `${citationList.length}`;
+}
+
+/* ────────────────────────────────────────────────────────────── */
+/*  Helpers                                                       */
+/* ────────────────────────────────────────────────────────────── */
+function safeJsonParse(text) {
+  try { return JSON.parse(text || "{}"); } catch { return {}; }
+}
+
+function sendEvent(event) { dc?.send(JSON.stringify(event)); }
+function sendToolOutput(callId, output) {
+  sendEvent({
+    type: "conversation.item.create",
+    item: { type: "function_call_output", call_id: callId, output: JSON.stringify(output) },
+  });
+}
+
+async function fetchJson(url, init) {
+  const response = await fetch(url, init);
+  if (!response.ok) throw new Error(await response.text());
+  return response.json();
+}
+async function fetchText(url, init) {
+  const response = await fetch(url, init);
+  if (!response.ok) throw new Error(await response.text());
+  return response.text();
+}
+
+/* ────────────────────────────────────────────────────────────── */
+/*  Demo mode — preview without a backend                         */
+/*  visit ?demo=1                                                 */
+/* ────────────────────────────────────────────────────────────── */
+async function runDemo() {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const stream = async (role, text, perChar = 14) => {
+    ensureDraftTurn(role);
+    let acc = "";
+    for (const ch of text) {
+      acc += ch;
+      updateDraftTurn(role, acc);
+      await sleep(perChar);
+    }
+    commitDraftTurn(role, text);
+  };
+
+  $("session-id").textContent = "sess_demo01x";
+  setStatus("pending", "minting session");
+  setMic("connecting");
+  await sleep(700);
+  setStatus("live", "live");
+  setMic("listening", true);
+  $("stop").disabled = false;
+
+  await sleep(500);
+  await stream("user", "What is forty-seven plus twenty-three?");
+  await sleep(200);
+  logTool({ name: "sum", args: { a: 47, b: 23 }, result: 70, status: "ok" });
+  await sleep(280);
+  await stream("assistant", "Forty-seven plus twenty-three equals seventy.");
+
+  await sleep(700);
+  await stream("user", "Who won the F1 race in São Paulo last weekend?");
+  await sleep(160);
+  logTool({ name: "web_search", args: { query: "F1 São Paulo GP winner" }, status: "pending", note: "searching" });
+  await sleep(900);
+  logTool({ name: "web_search", args: { query: "F1 São Paulo GP winner" }, result: "3 citations", status: "ok" });
+  renderCitations([
+    { title: "Verstappen takes São Paulo Grand Prix from pole", url: "https://www.formula1.com/en/latest/article/recap-sao-paulo-gp-2025" },
+    { title: "Sao Paulo GP — Race results and championship standings", url: "https://www.autosport.com/f1/news/sao-paulo-gp-results-2025" },
+    { title: "Interlagos winners list (1973–present)",         url: "https://en.wikipedia.org/wiki/Brazilian_Grand_Prix" },
+  ]);
+  await sleep(220);
+  await stream("assistant",
+    "Max Verstappen won the São Paulo Grand Prix at Interlagos, leading from pole to flag. " +
+    "Lando Norris finished second and Charles Leclerc completed the podium.");
+
+  setStatus("live", "ready");
+}
+</script>
+</body>
+</html>

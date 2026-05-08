@@ -2,7 +2,10 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use std::collections::HashMap;
 
-pub const DEFAULT_MODEL: &str = "gpt-realtime";
+pub const GPT_REALTIME_2: &str = "gpt-realtime-2";
+pub const GPT_REALTIME_TRANSLATE: &str = "gpt-realtime-translate";
+pub const GPT_REALTIME_WHISPER: &str = "gpt-realtime-whisper";
+pub const DEFAULT_MODEL: &str = GPT_REALTIME_2;
 
 /// Arbitrary JSON payloads allowed by the API (e.g. metadata values).
 pub type Metadata = HashMap<String, Value>;
@@ -61,6 +64,7 @@ pub enum Modality {
 pub enum OutputModalities {
     Audio,
     Text,
+    AudioText,
 }
 
 impl Serialize for OutputModalities {
@@ -71,8 +75,25 @@ impl Serialize for OutputModalities {
         let values = match self {
             Self::Audio => vec![Modality::Audio],
             Self::Text => vec![Modality::Text],
+            Self::AudioText => vec![Modality::Audio, Modality::Text],
         };
         values.serialize(serializer)
+    }
+}
+
+impl OutputModalities {
+    #[must_use]
+    pub const fn audio_text() -> Self {
+        Self::AudioText
+    }
+
+    #[must_use]
+    pub fn as_modalities(self) -> Vec<Modality> {
+        match self {
+            Self::Audio => vec![Modality::Audio],
+            Self::Text => vec![Modality::Text],
+            Self::AudioText => vec![Modality::Audio, Modality::Text],
+        }
     }
 }
 
@@ -94,11 +115,48 @@ impl<'de> Deserialize<'de> for OutputModalities {
             Repr::Many(values) => match values.as_slice() {
                 [Modality::Audio] => Ok(Self::Audio),
                 [Modality::Text] => Ok(Self::Text),
+                [Modality::Audio, Modality::Text] | [Modality::Text, Modality::Audio] => {
+                    Ok(Self::AudioText)
+                }
                 _ => Err(serde::de::Error::custom(
-                    "output_modalities must contain exactly one of: audio or text",
+                    "output_modalities must contain audio, text, or audio+text",
                 )),
             },
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResponsePhase {
+    Commentary,
+    FinalAnswer,
+    Unknown(String),
+}
+
+impl Serialize for ResponsePhase {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            Self::Commentary => serializer.serialize_str("commentary"),
+            Self::FinalAnswer => serializer.serialize_str("final_answer"),
+            Self::Unknown(value) => serializer.serialize_str(value),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ResponsePhase {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Ok(match value.as_str() {
+            "commentary" => Self::Commentary,
+            "final_answer" => Self::FinalAnswer,
+            _ => Self::Unknown(value),
+        })
     }
 }
 
@@ -110,6 +168,23 @@ pub enum Eagerness {
     #[default]
     Medium,
     High,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasoningEffort {
+    Minimal,
+    #[default]
+    Low,
+    Medium,
+    High,
+    XHigh,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct ReasoningConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effort: Option<ReasoningEffort>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

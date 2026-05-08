@@ -90,6 +90,15 @@ pub enum SdkEvent {
         transcript: String,
         usage: Option<Usage>,
     },
+    TranslationAudioDelta {
+        delta: String,
+    },
+    TranslationOutputTranscriptDelta {
+        delta: String,
+    },
+    TranslationInputTranscriptDelta {
+        delta: String,
+    },
     Error {
         event_id: String,
         error: ServerError,
@@ -127,10 +136,34 @@ impl SdkEvent {
         if let Some(mapped) = map_transcription_ref(&boxed) {
             return Some(mapped);
         }
+        if let Some(mapped) = map_translation_ref(&boxed) {
+            return Some(mapped);
+        }
         if let Some(mapped) = map_error_ref(&boxed) {
             return Some(mapped);
         }
         Some(Self::Raw(boxed))
+    }
+}
+
+fn map_translation_ref(event: &ServerEvent) -> Option<SdkEvent> {
+    match event {
+        ServerEvent::SessionOutputAudioDelta { delta, .. } => {
+            Some(SdkEvent::TranslationAudioDelta {
+                delta: delta.clone(),
+            })
+        }
+        ServerEvent::SessionOutputTranscriptDelta { delta, .. } => {
+            Some(SdkEvent::TranslationOutputTranscriptDelta {
+                delta: delta.clone(),
+            })
+        }
+        ServerEvent::SessionInputTranscriptDelta { delta, .. } => {
+            Some(SdkEvent::TranslationInputTranscriptDelta {
+                delta: delta.clone(),
+            })
+        }
+        _ => None,
     }
 }
 

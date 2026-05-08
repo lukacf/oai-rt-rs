@@ -32,6 +32,12 @@ impl ResponseBuilder {
     }
 
     #[must_use]
+    pub const fn output_audio_text(mut self) -> Self {
+        self.config.output_modalities = Some(OutputModalities::AudioText);
+        self
+    }
+
+    #[must_use]
     pub fn instructions(mut self, instructions: impl Into<String>) -> Self {
         self.config.instructions = Some(instructions.into());
         self

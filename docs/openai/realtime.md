@@ -3,6 +3,31 @@ Realtime API
 
 Build low-latency, multimodal LLM applications with the Realtime API.
 
+Current session families
+------------------------
+
+As of the GPT Realtime 2 release, Realtime has three distinct session families:
+
+*   **Voice-agent sessions** connect to `/v1/realtime` and use `gpt-realtime-2`
+    for speech-to-speech assistant workflows with text, audio, image input,
+    tools, and configurable `reasoning.effort`.
+*   **Translation sessions** connect to `/v1/realtime/translations` and use
+    `gpt-realtime-translate`. They stream source audio continuously and emit
+    translated audio plus transcript deltas. They do not use `response.create`.
+*   **Transcription sessions** connect to `/v1/realtime?intent=transcription`,
+    use `gpt-realtime-whisper`, and stream live transcript deltas without
+    assistant responses.
+
+For Realtime requests that identify end users, send a stable privacy-preserving
+identifier with the `OpenAI-Safety-Identifier` header when creating client
+secrets, opening trusted WebSocket connections, creating Realtime sessions, or
+creating WebRTC calls.
+
+`gpt-realtime-2` may produce intermediate `commentary` output for preambles and
+tool-use progress before the `final_answer` phase. Applications should preserve
+the response item `phase` field and decide whether commentary is spoken,
+displayed, or logged separately from final content.
+
 The OpenAI Realtime API enables low-latency communication with [models](/docs/models) that natively support speech-to-speech interactions as well as multimodal inputs (audio, images, and text) and outputs (audio and text). These APIs can also be used for [realtime audio transcription](/docs/guides/realtime-transcription).
 
 Voice agents

@@ -270,6 +270,18 @@ pub enum ServerEvent {
         event_id: String,
         rate_limits: Vec<RateLimit>,
     },
+    SessionOutputAudioDelta {
+        event_id: Option<String>,
+        delta: String,
+    },
+    SessionOutputTranscriptDelta {
+        event_id: Option<String>,
+        delta: String,
+    },
+    SessionInputTranscriptDelta {
+        event_id: Option<String>,
+        delta: String,
+    },
     Unknown(ArbitraryJson),
 }
 
@@ -563,6 +575,24 @@ enum ServerEventRepr {
     RateLimitsUpdated {
         event_id: String,
         rate_limits: Vec<RateLimit>,
+    },
+    #[serde(rename = "session.output_audio.delta")]
+    SessionOutputAudioDelta {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        event_id: Option<String>,
+        delta: String,
+    },
+    #[serde(rename = "session.output_transcript.delta")]
+    SessionOutputTranscriptDelta {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        event_id: Option<String>,
+        delta: String,
+    },
+    #[serde(rename = "session.input_transcript.delta")]
+    SessionInputTranscriptDelta {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        event_id: Option<String>,
+        delta: String,
     },
 }
 
@@ -1003,6 +1033,15 @@ impl From<ServerEventRepr> for ServerEvent {
                 event_id,
                 rate_limits,
             },
+            ServerEventRepr::SessionOutputAudioDelta { event_id, delta } => {
+                Self::SessionOutputAudioDelta { event_id, delta }
+            }
+            ServerEventRepr::SessionOutputTranscriptDelta { event_id, delta } => {
+                Self::SessionOutputTranscriptDelta { event_id, delta }
+            }
+            ServerEventRepr::SessionInputTranscriptDelta { event_id, delta } => {
+                Self::SessionInputTranscriptDelta { event_id, delta }
+            }
             ServerEventRepr::DtmfEventReceived { received_at, event } => {
                 Self::DtmfEventReceived { received_at, event }
             }
@@ -1477,6 +1516,24 @@ impl Serialize for ServerEvent {
                     event_id: event_id.clone(),
                     rate_limits: rate_limits.clone(),
                 },
+                Self::SessionOutputAudioDelta { event_id, delta } => {
+                    ServerEventRepr::SessionOutputAudioDelta {
+                        event_id: event_id.clone(),
+                        delta: delta.clone(),
+                    }
+                }
+                Self::SessionOutputTranscriptDelta { event_id, delta } => {
+                    ServerEventRepr::SessionOutputTranscriptDelta {
+                        event_id: event_id.clone(),
+                        delta: delta.clone(),
+                    }
+                }
+                Self::SessionInputTranscriptDelta { event_id, delta } => {
+                    ServerEventRepr::SessionInputTranscriptDelta {
+                        event_id: event_id.clone(),
+                        delta: delta.clone(),
+                    }
+                }
                 Self::DtmfEventReceived { received_at, event } => {
                     ServerEventRepr::DtmfEventReceived {
                         received_at: *received_at,
@@ -1514,6 +1571,9 @@ impl ServerEvent {
                 match self {
                     $(Self::$variant { event_id, .. } => Some(event_id.as_str()),)*
                     Self::DtmfEventReceived { .. } => None,
+                    Self::SessionOutputAudioDelta { event_id, .. }
+                    | Self::SessionOutputTranscriptDelta { event_id, .. }
+                    | Self::SessionInputTranscriptDelta { event_id, .. } => event_id.as_deref(),
                     Self::Unknown(value) => value.get("event_id").and_then(|v| v.as_str()),
                 }
             };

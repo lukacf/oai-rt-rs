@@ -26,6 +26,15 @@ pub struct ServerError {
     pub event_id: Option<String>,
 }
 
+impl ServerError {
+    /// Returns true for the benign race where a best-effort `response.cancel`
+    /// arrives after the response has already completed server-side.
+    #[must_use]
+    pub fn is_response_cancel_not_active(&self) -> bool {
+        self.code.as_deref() == Some("response_cancel_not_active")
+    }
+}
+
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("WebSocket error: {0}")]
