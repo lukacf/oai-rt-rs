@@ -1,7 +1,8 @@
 use crate::error::Result;
 use crate::protocol::models::{
-    AudioConfig, AudioFormat, InputAudioTranscription, Modality, NoiseReduction, Nullable, Session,
-    SessionConfig, SessionKind, TurnDetection,
+    AudioConfig, AudioFormat, InputAudioTranscription, MaxTokens, Modality, NoiseReduction,
+    Nullable, PromptRef, ReasoningConfig, Session, SessionConfig, SessionKind, Temperature, Tool,
+    ToolChoice, Tracing, Truncation, TurnDetection, Voice,
 };
 use reqwest::{
     Client, RequestBuilder,
@@ -77,10 +78,42 @@ struct CreateTranslationClientSecretRequest {
 
 #[derive(Debug, Clone, Serialize)]
 struct CreateRealtimeSessionRequest {
+    #[serde(rename = "type")]
+    pub kind: SessionKind,
     pub model: String,
     pub modalities: Vec<Modality>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub include: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<PromptRef>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncation: Option<Truncation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub instructions: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_audio_format: Option<AudioFormat>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_audio_format: Option<AudioFormat>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_audio_transcription: Option<Nullable<InputAudioTranscription>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turn_detection: Option<Nullable<TurnDetection>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<Tool>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_choice: Option<ToolChoice>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<Temperature>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<MaxTokens>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audio: Option<AudioConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tracing: Option<Tracing>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub voice: Option<Voice>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<ReasoningConfig>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -126,6 +159,7 @@ const fn transcription_audio_format_label(format: &AudioFormat) -> &'static str 
 impl From<SessionConfig> for CreateRealtimeSessionRequest {
     fn from(session: SessionConfig) -> Self {
         Self {
+            kind: session.kind,
             model: session.model,
             modalities: session
                 .modalities
@@ -135,7 +169,22 @@ impl From<SessionConfig> for CreateRealtimeSessionRequest {
                     }
                     other => other.as_modalities(),
                 }),
+            include: session.include,
+            prompt: session.prompt,
+            truncation: session.truncation,
             instructions: session.instructions,
+            input_audio_format: session.input_audio_format,
+            output_audio_format: session.output_audio_format,
+            input_audio_transcription: session.input_audio_transcription,
+            turn_detection: session.turn_detection,
+            tools: session.tools,
+            tool_choice: session.tool_choice,
+            temperature: session.temperature,
+            max_output_tokens: session.max_output_tokens,
+            audio: session.audio,
+            tracing: session.tracing,
+            voice: session.voice,
+            reasoning: session.reasoning,
         }
     }
 }
@@ -607,6 +656,10 @@ fn extract_call_id(location: &HeaderValue) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::models::{
+        OutputAudioConfig, OutputModalities, ReasoningEffort, ToolChoiceMode,
+    };
+    use serde_json::json;
 
     #[test]
     fn safety_identifier_header_can_be_added_to_call_requests() {
@@ -640,5 +693,53 @@ mod tests {
             crate::error::Error::InvalidClientEvent(message)
                 if message.contains("safety_identifier")
         ));
+    }
+
+    #[test]
+    fn realtime_session_request_preserves_configured_fields() {
+        let mut session = SessionConfig::new(
+            SessionKind::Realtime,
+            crate::protocol::models::GPT_REALTIME_2,
+            OutputModalities::Audio,
+        );
+        session.instructions = Some("Use tools when useful.".to_string());
+        session.audio = Some(AudioConfig {
+            input: None,
+            output: Some(OutputAudioConfig {
+                format: None,
+                voice: Some(Voice::from("marin")),
+                speed: None,
+                language: None,
+            }),
+        });
+        session.tools = Some(vec![Tool::Function {
+            name: "sum".to_string(),
+            description: Some("Add two integers.".to_string()),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "a": { "type": "integer" },
+                    "b": { "type": "integer" }
+                },
+                "required": ["a", "b"],
+                "additionalProperties": false
+            }),
+        }]);
+        session.tool_choice = Some(ToolChoice::Mode(ToolChoiceMode::Auto));
+        session.reasoning = Some(ReasoningConfig {
+            effort: Some(ReasoningEffort::Low),
+        });
+
+        let serialized =
+            serde_json::to_value(CreateRealtimeSessionRequest::from(session)).expect("serialize");
+
+        assert_eq!(serialized.pointer("/type"), Some(&json!("realtime")));
+        assert_eq!(
+            serialized.pointer("/audio/output/voice"),
+            Some(&json!("marin"))
+        );
+        assert_eq!(serialized.pointer("/tools/0/name"), Some(&json!("sum")));
+        assert_eq!(serialized.pointer("/tool_choice"), Some(&json!("auto")));
+        assert_eq!(serialized.pointer("/reasoning/effort"), Some(&json!("low")));
     }
 }

@@ -131,3 +131,30 @@ Those logprobs can be used to calculate the confidence score of the transcriptio
   "include": ["item.input_audio_transcription.logprobs"]
 }
 ```
+
+### Enriched transcript prompts
+
+`audio.input.transcription.prompt` can steer vocabulary, formatting, and style
+when the selected transcription model and endpoint support prompt steering. This
+is useful for short keyword lists, domain terms, preferred spellings, and light
+formatting hints.
+
+For paralinguistic markers such as `[laughing]`, `[sarcastic]`, or pronunciation
+notes, treat the transcription prompt as best-effort. The transcript is still a
+model interpretation of the audio, and subtle tone labels are not guaranteed.
+Keep prompts short and ask the model to add markers only when the audio strongly
+supports them:
+
+```text
+Transcribe verbatim. Preserve filler words. Add bracketed markers like
+[laughing] or [sarcastic] only when clearly audible. Use pronunciation notes
+only when the speaker explicitly emphasizes how a word was said.
+```
+
+For higher-quality enriched transcripts in a voice-agent session, use an
+out-of-band Realtime text response after each committed user audio turn. Send a
+separate `response.create` with `conversation: "none"` and `output_modalities:
+["text"]`, and give that request richer transcription instructions. That uses
+the Realtime model itself for the transcript pass, keeps the enriched transcript
+out of the main conversation state, and generally follows nuanced transcription
+instructions better than the lightweight realtime ASR path.

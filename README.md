@@ -248,6 +248,13 @@ while let Some(event) = session.next_event().await? {
 # }
 ```
 
+Transcription prompts are best-effort steering for vocabulary, spelling,
+punctuation, and light formatting. For enriched transcripts with markers such as
+`[laughing]` or pronunciation notes, keep the prompt short and treat the output
+as advisory. For stronger instruction following, run an out-of-band Realtime
+text response after each committed audio turn with `conversation: "none"` and
+`output_modalities: ["text"]`.
+
 ## Realtime 2 phases and preambles
 
 `gpt-realtime-2` can produce intermediate commentary, including spoken

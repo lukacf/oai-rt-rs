@@ -160,14 +160,22 @@ impl RealtimeBuilder {
 
     #[must_use]
     pub fn transcription_model(mut self, model: impl Into<String>) -> Self {
-        let transcription = InputAudioTranscription {
-            model: Some(model.into()),
-            language: None,
-            prompt: None,
-        };
         let audio = self.audio.get_or_insert_with(AudioConfig::default);
         let input = audio.input.get_or_insert_with(InputAudioConfig::default);
-        input.transcription = Some(crate::protocol::models::Nullable::Value(transcription));
+        let transcription = input
+            .transcription
+            .get_or_insert_with(|| {
+                crate::protocol::models::Nullable::Value(InputAudioTranscription::default())
+            })
+            .as_ref()
+            .cloned()
+            .unwrap_or_default();
+        input.transcription = Some(crate::protocol::models::Nullable::Value(
+            InputAudioTranscription {
+                model: Some(model.into()),
+                ..transcription
+            },
+        ));
         self
     }
 
@@ -936,6 +944,29 @@ mod tests {
             snapshot.session.include.as_deref(),
             Some(&["item.input_audio_transcription.logprobs".to_string()][..])
         );
+    }
+
+    #[test]
+    fn transcription_model_preserves_existing_prompt_and_language() {
+        let snapshot = Realtime::transcription_builder()
+            .api_key("test-key")
+            .transcription_language("en")
+            .transcription_prompt("Keywords: systolic")
+            .transcription_model("gpt-4o-transcribe")
+            .build()
+            .expect("transcription snapshot");
+
+        let transcription = snapshot
+            .session
+            .audio
+            .as_ref()
+            .and_then(|audio| audio.input.as_ref())
+            .and_then(|input| input.transcription.as_ref())
+            .and_then(crate::protocol::models::Nullable::as_ref)
+            .expect("transcription config");
+        assert_eq!(transcription.model.as_deref(), Some("gpt-4o-transcribe"));
+        assert_eq!(transcription.language.as_deref(), Some("en"));
+        assert_eq!(transcription.prompt.as_deref(), Some("Keywords: systolic"));
     }
 
     #[test]
