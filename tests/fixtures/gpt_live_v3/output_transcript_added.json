@@ -1,0 +1,10 @@
+{
+  "type": "output_transcript.added",
+  "start_ms": 10,
+  "end_ms": 20,
+  "item": {
+    "id": "item_fixture_output",
+    "type": "output_transcript",
+    "text": "FIXTURE_PRIVATE_OUTPUT_TRANSCRIPT"
+  }
+}

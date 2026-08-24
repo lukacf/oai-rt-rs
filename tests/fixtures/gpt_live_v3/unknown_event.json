@@ -1,0 +1,7 @@
+{
+  "type": "future.private_event",
+  "provider_id": "provider_fixture_unknown",
+  "nested": {
+    "secret": "FIXTURE_PRIVATE_UNKNOWN_SECRET"
+  }
+}

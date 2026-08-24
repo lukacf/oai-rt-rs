@@ -1,0 +1,9 @@
+{
+  "type": "session.context.append",
+  "content": [
+    {
+      "type": "input_text",
+      "text": "FIXTURE_PRIVATE_SESSION_CONTEXT"
+    }
+  ]
+}

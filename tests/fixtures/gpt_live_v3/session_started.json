@@ -1,0 +1,8 @@
+{
+  "type": "session.started",
+  "session": {
+    "id": "rtc_fixture_private_id",
+    "expires_at": 0,
+    "status": "active"
+  }
+}

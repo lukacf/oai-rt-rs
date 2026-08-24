@@ -1,0 +1,10 @@
+{
+  "type": "turn.done",
+  "turn": {
+    "id": "turn_fixture_assistant",
+    "role": "assistant",
+    "start_ms": 20,
+    "end_ms": 40,
+    "transcript": "FIXTURE_PRIVATE_TURN_DONE"
+  }
+}

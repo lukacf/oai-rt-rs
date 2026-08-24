@@ -1,0 +1,8 @@
+{
+  "type": "delegation.created",
+  "offset_ms": 40,
+  "item": {
+    "type": "delegation",
+    "target": "client"
+  }
+}

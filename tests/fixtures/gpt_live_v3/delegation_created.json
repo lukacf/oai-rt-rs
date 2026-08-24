@@ -1,0 +1,12 @@
+{
+  "type": "delegation.created",
+  "offset_ms": 40,
+  "item": {
+    "id": "item_fixture_delegation",
+    "type": "delegation",
+    "target": "client",
+    "handoff_id": "handoff_fixture_private",
+    "user_bidi_turn_id": "turn_fixture_user",
+    "content": []
+  }
+}

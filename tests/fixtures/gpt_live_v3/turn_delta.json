@@ -1,0 +1,7 @@
+{
+  "type": "turn.delta",
+  "turn_id": "turn_fixture_assistant",
+  "start_ms": 20,
+  "end_ms": 30,
+  "delta": "FIXTURE_PRIVATE_DELTA"
+}
