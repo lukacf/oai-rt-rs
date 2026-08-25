@@ -1,8 +1,10 @@
 #![cfg(feature = "experimental-gpt-live")]
 
 use oai_rt_rs::experimental::gpt_live::{
-    CreateCallRequest, Direction, GptLiveCredentials, SidebandHeaders, TerminalClass, WireSummary,
-    decode_server_event,
+    CreateCallRequest, Delegation, DelegationFunctionCallOutput, Direction, EventCarrier,
+    ExtraFields, FunctionCallId, FunctionCallOutput, FunctionTool, GptLiveCredentials,
+    ResponsesConfig, ResponsesDelegation, SidebandHeaders, TerminalClass, WireSummary,
+    decode_received_server_event, decode_server_event,
 };
 use serde_json::json;
 use std::io::{self, Write};
@@ -37,6 +39,7 @@ impl<'a> MakeWriter<'a> for SharedWriter {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn diagnostics_and_debug_output_never_contain_private_payload_material() {
     let writer = SharedWriter::default();
     let subscriber = tracing_subscriber::fmt()
@@ -96,9 +99,41 @@ fn diagnostics_and_debug_output_never_contain_private_payload_material() {
         r#"{"type":"unsafe.FIXTURE_PRIVATE_UNKNOWN_KIND","secret":"FIXTURE_PRIVATE_UNKNOWN_SECRET","provider_id":"rtc_fixture_private_id","audio":"RklYVFVSRV9QUklWQVRFX0FVRElP"}"#,
     )
     .expect("unknown fixture");
+    let responses = Delegation::Responses(ResponsesDelegation::new(
+        ResponsesConfig {
+            model: "FIXTURE_PRIVATE_RESPONSES_MODEL".to_owned(),
+            instructions: Some("FIXTURE_PRIVATE_BRIDGE_INSTRUCTIONS".to_owned()),
+            tools: vec![FunctionTool::new(
+                "FIXTURE_PRIVATE_TOOL_NAME",
+                "FIXTURE_PRIVATE_TOOL_DESCRIPTION",
+                json!({ "secret": "FIXTURE_PRIVATE_TOOL_SCHEMA" }),
+                ExtraFields::new(),
+            )],
+            extra: ExtraFields::new(),
+        },
+        ExtraFields::new(),
+    ));
+    let function_output = DelegationFunctionCallOutput::new(FunctionCallOutput::new(
+        FunctionCallId::new("FIXTURE_PRIVATE_FUNCTION_CALL_ID"),
+        "FIXTURE_PRIVATE_FUNCTION_OUTPUT",
+    ));
+    let bridge_arguments = oai_rt_rs::experimental::gpt_live::decode_bridge_arguments(
+        r#"{"request":"FIXTURE_PRIVATE_BRIDGE_REQUEST"}"#,
+    )
+    .expect("bridge arguments");
+    let received = decode_received_server_event(
+        EventCarrier::OrderedOaiEvents,
+        r#"{"type":"FIXTURE_PRIVATE_RECEIVED_KIND","secret":"FIXTURE_PRIVATE_RECEIVED_SECRET"}"#,
+    )
+    .expect("received unknown event");
+    let Delegation::Responses(responses_details) = &responses else {
+        panic!("Responses delegation fixture");
+    };
     let output = format!(
-        "{}\n{credentials:?}\n{request:?}\n{transcript:?}\n{turn:?}\n{delegation:?}\n{unknown:?}",
-        String::from_utf8(writer.0.lock().expect("writer lock").clone()).expect("UTF-8 log")
+        "{}\n{credentials:?}\n{request:?}\n{transcript:?}\n{turn:?}\n{delegation:?}\n{unknown:?}\n{responses:?}\n{responses_details:?}\n{:?}\n{:?}\n{function_output:?}\n{bridge_arguments:?}\n{received:?}",
+        String::from_utf8(writer.0.lock().expect("writer lock").clone()).expect("UTF-8 log"),
+        responses_details.responses,
+        responses_details.responses.tools[0]
     );
 
     assert!(output.contains("delegation.context.append"));
@@ -122,6 +157,16 @@ fn diagnostics_and_debug_output_never_contain_private_payload_material() {
         "handoff_fixture_private",
         "RklYVFVSRV9QUklWQVRFX0FVRElP",
         "FIXTURE_PRIVATE_UNKNOWN_SECRET",
+        "FIXTURE_PRIVATE_RESPONSES_MODEL",
+        "FIXTURE_PRIVATE_BRIDGE_INSTRUCTIONS",
+        "FIXTURE_PRIVATE_TOOL_NAME",
+        "FIXTURE_PRIVATE_TOOL_DESCRIPTION",
+        "FIXTURE_PRIVATE_TOOL_SCHEMA",
+        "FIXTURE_PRIVATE_FUNCTION_CALL_ID",
+        "FIXTURE_PRIVATE_FUNCTION_OUTPUT",
+        "FIXTURE_PRIVATE_BRIDGE_REQUEST",
+        "FIXTURE_PRIVATE_RECEIVED_KIND",
+        "FIXTURE_PRIVATE_RECEIVED_SECRET",
     ] {
         assert!(!output.contains(secret), "diagnostics leaked {secret}");
     }

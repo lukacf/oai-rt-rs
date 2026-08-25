@@ -9,10 +9,12 @@ use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use futures::SinkExt;
 use oai_rt_rs::experimental::gpt_live::{
-    CallSession, ClientEvent, ContextChannel, CreateCallRequest, DelegationContextAppend,
-    ExtraFields, GptLiveCredentials, GptLiveEndpoints, GptLiveTransport, InputTextContent,
-    ServerEvent, SessionAudio, SessionAudioOutput, SessionContextAppend, SidebandHeaders,
-    TransportError,
+    CallSession, ClientEvent, CreateCallRequest, Delegation, DelegationFunctionCallOutput,
+    EventCarrier, ExtraFields, FunctionCallId, FunctionCallOutput, FunctionTool,
+    GptLiveCredentials, GptLiveEndpoints, GptLiveTransport, InputTextContent,
+    MAX_RAW_JSON_EVENT_BYTES, ResponsesConfig, ResponsesDelegation, ServerEvent, SessionAudio,
+    SessionAudioOutput, SessionContextAppend, SidebandHeaders, TransportError,
+    WebSocketFailureClass,
 };
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -83,6 +85,7 @@ async fn create_call(
     let location = match authorization.as_str() {
         "Bearer FIXTURE_WEBSOCKET_FAILURE_TOKEN" => "/v1/realtime/calls/rtc_fixture_rejected",
         "Bearer FIXTURE_CLIENT_CLOSE_TOKEN" => "/v1/realtime/calls/rtc_fixture_client_close",
+        "Bearer FIXTURE_OVERSIZED_EVENT_TOKEN" => "/v1/realtime/calls/rtc_fixture_oversized",
         _ => "/v1/realtime/calls/rtc_fixture_call",
     };
     Response::builder()
@@ -112,8 +115,11 @@ async fn connect_sideband(
             .expect("rejected sideband response");
     }
     let wait_for_client_close = call_id == "rtc_fixture_client_close";
+    let send_oversized_event = call_id == "rtc_fixture_oversized";
     upgrade
-        .on_upgrade(move |socket| serve_sideband(socket, capture, wait_for_client_close))
+        .on_upgrade(move |socket| {
+            serve_sideband(socket, capture, wait_for_client_close, send_oversized_event)
+        })
         .into_response()
 }
 
@@ -121,6 +127,7 @@ async fn serve_sideband(
     mut socket: WebSocket,
     capture: SharedCapture,
     wait_for_client_close: bool,
+    send_oversized_event: bool,
 ) {
     socket
         .send(AxumMessage::Text(
@@ -129,6 +136,14 @@ async fn serve_sideband(
         ))
         .await
         .expect("send session.started");
+    if send_oversized_event {
+        let _ = socket
+            .send(AxumMessage::Text(
+                "x".repeat(MAX_RAW_JSON_EVENT_BYTES + 1).into(),
+            ))
+            .await;
+        return;
+    }
     if wait_for_client_close {
         while let Some(message) = socket.recv().await {
             if matches!(message, Ok(AxumMessage::Close(_))) {
@@ -162,6 +177,30 @@ fn request() -> CreateCallRequest {
             extra: ExtraFields::new(),
         },
     }
+}
+
+fn responses_request() -> CreateCallRequest {
+    let mut request = request();
+    request.session.delegation = Some(Delegation::Responses(ResponsesDelegation::new(
+        ResponsesConfig {
+            model: "gpt-fixture-bridge".to_owned(),
+            instructions: Some("FIXTURE_PRIVATE_BRIDGE_INSTRUCTIONS".to_owned()),
+            tools: vec![FunctionTool::new(
+                "invoke_meerkat",
+                "Delegate to the channel-bound fixture agent.",
+                json!({
+                    "type": "object",
+                    "properties": { "request": { "type": "string" } },
+                    "required": ["request"],
+                    "additionalProperties": false
+                }),
+                ExtraFields::new(),
+            )],
+            extra: ExtraFields::new(),
+        },
+        ExtraFields::new(),
+    )));
+    request
 }
 
 fn credentials(token: &str) -> GptLiveCredentials {
@@ -261,28 +300,27 @@ async fn call_and_sideband_match_the_private_mechanical_contract() {
         .await
         .expect("connect sideband");
     let (sender, mut receiver) = sideband.split();
-    let event = receiver
-        .next_event()
+    let observation = receiver
+        .next_observation()
         .await
         .expect("receive sideband event")
         .expect("session.started");
-    assert!(matches!(event, ServerEvent::SessionStarted(_)));
+    assert_eq!(observation.carrier(), EventCarrier::Sideband);
+    assert!(observation.byte_count() > 0);
+    assert!(matches!(
+        observation.event(),
+        ServerEvent::SessionStarted(_)
+    ));
     let receive_close = tokio::spawn(async move { receiver.next_event().await });
     sender
-        .send(&ClientEvent::DelegationContextAppend(
-            DelegationContextAppend {
-                delegation_item_id: "item_fixture_delegation".to_owned(),
-                channel: Some(ContextChannel::Speakable),
-                content: vec![InputTextContent {
-                    content_type: "input_text".to_owned(),
-                    text: "FIXTURE_PRIVATE_DELEGATION_CONTEXT".to_owned(),
-                    extra: ExtraFields::new(),
-                }],
-                extra: ExtraFields::new(),
-            },
+        .send(&ClientEvent::DelegationFunctionCallOutput(
+            DelegationFunctionCallOutput::new(FunctionCallOutput::new(
+                FunctionCallId::new("call_fixture_bridge"),
+                "FIXTURE_PRIVATE_FUNCTION_OUTPUT",
+            )),
         ))
         .await
-        .expect("send delegation context");
+        .expect("send function output");
 
     tokio::time::timeout(Duration::from_secs(1), async {
         loop {
@@ -319,13 +357,12 @@ async fn call_and_sideband_match_the_private_mechanical_contract() {
         assert_eq!(
             capture.client_event.as_ref(),
             Some(&json!({
-                "type": "delegation.context.append",
-                "delegation_item_id": "item_fixture_delegation",
-                "channel": "speakable",
-                "content": [{
-                    "type": "input_text",
-                    "text": "FIXTURE_PRIVATE_DELEGATION_CONTEXT"
-                }]
+                "type": "delegation.function_call_output.create",
+                "item": {
+                    "type": "function_call_output",
+                    "call_id": "call_fixture_bridge",
+                    "output": "FIXTURE_PRIVATE_FUNCTION_OUTPUT"
+                }
             }))
         );
         drop(capture);
@@ -335,6 +372,40 @@ async fn call_and_sideband_match_the_private_mechanical_contract() {
         .await
         .expect("receive task")
         .expect("clean server close");
+    server.abort();
+}
+
+#[tokio::test]
+async fn responses_delegation_routes_through_call_creation() {
+    let (transport, capture, server) = local_transport().await;
+    transport
+        .create_call(&responses_request(), &credentials("FIXTURE_BEARER_TOKEN"))
+        .await
+        .expect("create Responses-mode call");
+
+    let capture = capture.lock().expect("capture lock");
+    assert_eq!(
+        capture
+            .call_body
+            .as_ref()
+            .and_then(|body| body.pointer("/session/delegation/type")),
+        Some(&json!("responses"))
+    );
+    assert_eq!(
+        capture
+            .call_body
+            .as_ref()
+            .and_then(|body| body.pointer("/session/delegation/responses/tools/0/type")),
+        Some(&json!("function"))
+    );
+    assert_eq!(
+        capture
+            .call_body
+            .as_ref()
+            .and_then(|body| body.pointer("/session/delegation/responses/tools/0/name")),
+        Some(&json!("invoke_meerkat"))
+    );
+    drop(capture);
     server.abort();
 }
 
@@ -431,6 +502,63 @@ async fn call_session_extras_cannot_replace_delegation() {
     ));
     assert_error_chain_redacted(&error, &["FIXTURE_PRIVATE_DELEGATION_COLLISION"]);
     assert!(capture.lock().expect("capture lock").call_body.is_none());
+    server.abort();
+}
+
+#[tokio::test]
+async fn responses_tool_extras_cannot_replace_typed_fields() {
+    let (transport, capture, server) = local_transport().await;
+    let mut request = responses_request();
+    let Some(Delegation::Responses(delegation)) = request.session.delegation.as_mut() else {
+        panic!("Responses delegation fixture");
+    };
+    delegation.responses.tools[0].extra.insert(
+        "type".to_owned(),
+        json!("FIXTURE_PRIVATE_TOOL_TYPE_COLLISION"),
+    );
+    let error = transport
+        .create_call(&request, &credentials("FIXTURE_BEARER_TOKEN"))
+        .await
+        .expect_err("reserved tool type collision");
+    assert!(matches!(
+        error,
+        TransportError::Codec(
+            oai_rt_rs::experimental::gpt_live::CodecError::ReservedExtraField {
+                scope: "responses function tool",
+                field: "type",
+            }
+        )
+    ));
+    assert_error_chain_redacted(&error, &["FIXTURE_PRIVATE_TOOL_TYPE_COLLISION"]);
+    assert!(capture.lock().expect("capture lock").call_body.is_none());
+    server.abort();
+}
+
+#[tokio::test]
+async fn sideband_rejects_raw_messages_above_the_hard_bound() {
+    let (transport, _capture, server) = local_transport().await;
+    let credentials = credentials("FIXTURE_OVERSIZED_EVENT_TOKEN");
+    let created = transport
+        .create_call(&request(), &credentials)
+        .await
+        .expect("create oversized-event call");
+    let sideband = transport
+        .connect_sideband(&created.call_id, &credentials)
+        .await
+        .expect("connect sideband");
+    let (_sender, mut receiver) = sideband.split();
+    assert!(matches!(
+        receiver.next_event().await.expect("session event"),
+        Some(ServerEvent::SessionStarted(_))
+    ));
+    let error = receiver
+        .next_event()
+        .await
+        .expect_err("oversized event must fail before decoding");
+    assert!(matches!(
+        error,
+        TransportError::WebSocket(WebSocketFailureClass::Capacity)
+    ));
     server.abort();
 }
 

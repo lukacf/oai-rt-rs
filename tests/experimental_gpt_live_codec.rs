@@ -1,9 +1,12 @@
 #![cfg(feature = "experimental-gpt-live")]
 
 use oai_rt_rs::experimental::gpt_live::{
-    ClientEvent, CodecError, ContextChannel, DelegationContextAppend, ExtraFields,
-    InputTextContent, ServerEvent, SessionContextAppend, decode_server_event, encode_client_event,
-    encode_server_event,
+    ClientDelegation, ClientEvent, CodecError, ContextChannel, Delegation, DelegationContextAppend,
+    DelegationFunctionCallOutput, EventCarrier, ExtraFields, FunctionCallId, FunctionCallOutput,
+    FunctionTool, InputTextContent, MAX_BRIDGE_ARGUMENT_BYTES, MAX_FUNCTION_OUTPUT_BYTES,
+    MAX_RAW_JSON_EVENT_BYTES, ResponsesConfig, ResponsesDelegation, ServerEvent,
+    SessionContextAppend, decode_bridge_arguments, decode_received_server_event,
+    decode_server_event, encode_client_event, encode_server_event,
 };
 use serde_json::{Value, json};
 use std::error::Error;
@@ -65,6 +68,16 @@ fn unknown_event_round_trips_without_losing_json() {
     assert_eq!(unknown.raw(), &expected);
     let encoded = encode_server_event(&event).expect("unknown event encode");
     assert_eq!(serde_json::from_str::<Value>(&encoded).unwrap(), expected);
+}
+
+#[test]
+fn received_unknown_event_preserves_carrier_and_exact_wire_size() {
+    let input = fixture("unknown_event.json");
+    let observation = decode_received_server_event(EventCarrier::OrderedOaiEvents, &input)
+        .expect("received unknown event");
+    assert_eq!(observation.carrier(), EventCarrier::OrderedOaiEvents);
+    assert_eq!(observation.byte_count(), input.len());
+    assert!(matches!(observation.event(), ServerEvent::Unknown(_)));
 }
 
 #[test]
@@ -149,16 +162,147 @@ fn client_events_serialize_to_verified_wire_shapes() {
         }],
         extra: ExtraFields::new(),
     });
+    let function_output = ClientEvent::DelegationFunctionCallOutput(
+        DelegationFunctionCallOutput::new(FunctionCallOutput::new(
+            FunctionCallId::new("call_fixture_bridge"),
+            "FIXTURE_PRIVATE_FUNCTION_OUTPUT",
+        )),
+    );
 
     for (event, name) in [
         (session, "session_context_append.json"),
         (delegation, "delegation_context_append.json"),
+        (
+            function_output,
+            "delegation_function_call_output_create.json",
+        ),
     ] {
         let encoded = encode_client_event(&event).expect("client event encode");
         let actual: Value = serde_json::from_str(&encoded).unwrap();
         let expected: Value = serde_json::from_str(&fixture(name)).unwrap();
         assert_eq!(actual, expected);
     }
+}
+
+#[test]
+fn client_and_responses_delegation_configs_are_typed_and_exact() {
+    let client = Delegation::Client(ClientDelegation::default());
+    let client_actual = serde_json::to_value(client).expect("client delegation");
+    let client_expected: Value =
+        serde_json::from_str(&fixture("delegation_client.json")).expect("client fixture");
+    assert_eq!(client_actual, client_expected);
+
+    let responses = Delegation::Responses(ResponsesDelegation::new(
+        ResponsesConfig {
+            model: "gpt-fixture-bridge".to_owned(),
+            instructions: Some("FIXTURE_PRIVATE_BRIDGE_INSTRUCTIONS".to_owned()),
+            tools: vec![FunctionTool::new(
+                "invoke_meerkat",
+                "Delegate to the channel-bound fixture agent.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "request": { "type": "string" }
+                    },
+                    "required": ["request"],
+                    "additionalProperties": false
+                }),
+                ExtraFields::new(),
+            )],
+            extra: ExtraFields::new(),
+        },
+        ExtraFields::new(),
+    ));
+    let responses_actual = serde_json::to_value(responses).expect("responses delegation");
+    let responses_expected: Value =
+        serde_json::from_str(&fixture("delegation_responses.json")).expect("responses fixture");
+    assert_eq!(responses_actual, responses_expected);
+}
+
+#[test]
+fn function_call_output_nested_type_is_not_caller_controlled() {
+    let malformed = json!({
+        "type": "not_function_call_output",
+        "call_id": "call_fixture_bridge",
+        "output": "FIXTURE_PRIVATE_FUNCTION_OUTPUT"
+    });
+    assert!(serde_json::from_value::<FunctionCallOutput>(malformed).is_err());
+}
+
+#[test]
+fn qualified_hard_bounds_are_enforced_in_utf8_bytes() {
+    assert_eq!(
+        decode_bridge_arguments(&fixture("bridge_arguments.json"))
+            .expect("bridge fixture")
+            .request(),
+        "FIXTURE_PRIVATE_BRIDGE_REQUEST"
+    );
+
+    let prefix = r#"{"type":"fixture.unknown","padding":""#;
+    let suffix = r#""}"#;
+    let exact = format!(
+        "{prefix}{}{suffix}",
+        "x".repeat(MAX_RAW_JSON_EVENT_BYTES - prefix.len() - suffix.len())
+    );
+    assert_eq!(exact.len(), MAX_RAW_JSON_EVENT_BYTES);
+    assert!(matches!(
+        decode_server_event(&exact),
+        Ok(ServerEvent::Unknown(_))
+    ));
+    let oversized = format!("{exact} ");
+    assert!(matches!(
+        decode_server_event(&oversized),
+        Err(CodecError::OversizedRawEvent)
+    ));
+
+    let exact = format!(
+        r#"{{"request":"{}"}}"#,
+        "x".repeat(MAX_BRIDGE_ARGUMENT_BYTES)
+    );
+    assert_eq!(
+        decode_bridge_arguments(&exact)
+            .expect("exact bridge argument bound")
+            .request()
+            .len(),
+        MAX_BRIDGE_ARGUMENT_BYTES
+    );
+    let oversized = format!(
+        r#"{{"request":"{}"}}"#,
+        "x".repeat(MAX_BRIDGE_ARGUMENT_BYTES + 1)
+    );
+    assert!(matches!(
+        decode_bridge_arguments(&oversized),
+        Err(CodecError::OversizedBridgeArguments)
+    ));
+    let oversized_utf8 = format!(
+        r#"{{"request":"{}"}}"#,
+        "é".repeat(MAX_BRIDGE_ARGUMENT_BYTES / 2 + 1)
+    );
+    assert!(matches!(
+        decode_bridge_arguments(&oversized_utf8),
+        Err(CodecError::OversizedBridgeArguments)
+    ));
+    assert!(matches!(
+        decode_bridge_arguments(r#"{"request":"ok","identity_id":"forbidden"}"#),
+        Err(CodecError::MalformedBridgeArguments)
+    ));
+
+    let exact_output = "x".repeat(MAX_FUNCTION_OUTPUT_BYTES);
+    let exact_event = ClientEvent::DelegationFunctionCallOutput(DelegationFunctionCallOutput::new(
+        FunctionCallOutput::new(FunctionCallId::new("call_fixture_bound"), exact_output),
+    ));
+    encode_client_event(&exact_event).expect("exact output bound");
+
+    let oversized_secret = "s".repeat(MAX_FUNCTION_OUTPUT_BYTES + 1);
+    let oversized_event = ClientEvent::DelegationFunctionCallOutput(
+        DelegationFunctionCallOutput::new(FunctionCallOutput::new(
+            FunctionCallId::new("call_fixture_oversized"),
+            oversized_secret.clone(),
+        )),
+    );
+    let error = encode_client_event(&oversized_event).expect_err("oversized function output");
+    assert!(matches!(error, CodecError::OversizedFunctionOutput));
+    assert_error_chain_redacted(&error, &[&oversized_secret]);
 }
 
 #[test]
