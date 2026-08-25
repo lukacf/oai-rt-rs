@@ -174,6 +174,11 @@ impl fmt::Debug for ResponsesDelegation {
 #[derive(Clone, Serialize, Deserialize, PartialEq)]
 pub struct ResponsesConfig {
     pub model: String,
+    /// Optional nested Responses instructions.
+    ///
+    /// Direct private-session probes establish syntactic acceptance, but not
+    /// behavioral effect. Callers must not treat this field as a qualified
+    /// control contract without stronger provider evidence.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub instructions: Option<String>,
     pub tools: Vec<FunctionTool>,
