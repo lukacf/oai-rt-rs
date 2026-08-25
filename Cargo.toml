@@ -25,7 +25,14 @@ schemars = "0.8"
 tokio = { version = "1.0", features = ["rt", "net", "macros", "sync", "time"] }
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-native-roots"] }
 futures = "0.3"
-reqwest = { version = "0.12", features = ["json", "rustls-tls", "multipart"] }
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "rustls-tls",
+    "multipart",
+    "charset",
+    "http2",
+    "macos-system-configuration",
+] }
 thiserror = "2.0"
 url = "2.5"
 tracing = "0.1"
