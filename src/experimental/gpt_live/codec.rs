@@ -61,6 +61,11 @@ pub fn decode_server_event(input: &str) -> Result<ServerEvent, CodecError> {
 
     match kind.as_str() {
         "session.started" => decode_known(value, "session.started", ServerEvent::SessionStarted),
+        "session.usage.updated" => decode_known(
+            value,
+            "session.usage.updated",
+            ServerEvent::SessionUsageUpdated,
+        ),
         "session.context.appended" => decode_known(
             value,
             "session.context.appended",
@@ -176,6 +181,7 @@ pub fn encode_client_event(event: &ClientEvent) -> Result<String, CodecError> {
 pub fn encode_server_event(event: &ServerEvent) -> Result<String, CodecError> {
     match event {
         ServerEvent::SessionStarted(body) => encode_known("session.started", body),
+        ServerEvent::SessionUsageUpdated(body) => encode_known("session.usage.updated", body),
         ServerEvent::SessionContextAppended(body) => encode_known("session.context.appended", body),
         ServerEvent::InputTranscriptAdded(body) => encode_known("input_transcript.added", body),
         ServerEvent::OutputTranscriptAdded(body) => encode_known("output_transcript.added", body),

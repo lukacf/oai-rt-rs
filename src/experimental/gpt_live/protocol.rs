@@ -481,6 +481,7 @@ impl fmt::Debug for DelegationContextAppend {
 #[derive(Clone, PartialEq)]
 pub enum ServerEvent {
     SessionStarted(SessionStarted),
+    SessionUsageUpdated(SessionUsageUpdated),
     SessionContextAppended(SessionContextAppended),
     InputTranscriptAdded(InputTranscriptAdded),
     OutputTranscriptAdded(OutputTranscriptAdded),
@@ -512,6 +513,7 @@ impl ServerEvent {
     pub fn kind(&self) -> &str {
         match self {
             Self::SessionStarted(_) => "session.started",
+            Self::SessionUsageUpdated(_) => "session.usage.updated",
             Self::SessionContextAppended(_) => "session.context.appended",
             Self::InputTranscriptAdded(_) => "input_transcript.added",
             Self::OutputTranscriptAdded(_) => "output_transcript.added",
@@ -523,6 +525,17 @@ impl ServerEvent {
             Self::Unknown(event) => event.kind(),
         }
     }
+}
+
+/// Provider usage observation seen on an otherwise qualified live session.
+///
+/// Only the discriminant and its non-authoritative nature are qualified. The
+/// body remains forward-compatible opaque fields and must not drive session,
+/// billing, or execution authority.
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
+pub struct SessionUsageUpdated {
+    #[serde(flatten)]
+    pub extra: ExtraFields,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
