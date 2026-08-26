@@ -1,0 +1,6 @@
+{
+  "type": "delegation.context.appended",
+  "delegation_item_id": "item_fixture_delegation",
+  "start_ms": 40,
+  "end_ms": 50
+}

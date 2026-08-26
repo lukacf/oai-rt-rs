@@ -1,8 +1,13 @@
 #![warn(clippy::all, clippy::pedantic, clippy::nursery, clippy::cargo)]
 #![allow(clippy::module_name_repetitions)]
 #![allow(clippy::multiple_crate_versions)]
+// The public Result alias intentionally preserves rich transport errors inline.
+// Boxing them would break the pre-1.0 error variant API for every caller.
+#![allow(clippy::result_large_err)]
 
 pub mod error;
+#[cfg(feature = "experimental-gpt-live")]
+pub mod experimental;
 pub mod protocol;
 pub mod sdk;
 pub mod transport;

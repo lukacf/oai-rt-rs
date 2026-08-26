@@ -1,0 +1,10 @@
+{
+  "type": "delegation.context.append",
+  "delegation_item_id": "item_fixture_delegation",
+  "content": [
+    {
+      "type": "input_text",
+      "text": "FIXTURE_PRIVATE_DELEGATION_CONTEXT"
+    }
+  ]
+}

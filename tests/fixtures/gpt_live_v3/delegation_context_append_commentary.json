@@ -1,0 +1,11 @@
+{
+  "type": "delegation.context.append",
+  "delegation_item_id": "item_fixture_delegation",
+  "channel": "commentary",
+  "content": [
+    {
+      "type": "input_text",
+      "text": "FIXTURE_PRIVATE_DELEGATION_CONTEXT"
+    }
+  ]
+}
