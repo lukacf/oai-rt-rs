@@ -71,6 +71,20 @@ fn unknown_event_round_trips_without_losing_json() {
 }
 
 #[test]
+fn observed_session_usage_update_is_typed_but_remains_opaque() {
+    let input = json!({
+        "type": "session.usage.updated",
+        "usage": { "input_tokens": 7, "output_tokens": 11 },
+        "future_accounting_field": "retained"
+    });
+    let event = decode_server_event(&input.to_string()).expect("usage update decode");
+    assert!(matches!(event, ServerEvent::SessionUsageUpdated(_)));
+    assert_eq!(event.kind(), "session.usage.updated");
+    let encoded = encode_server_event(&event).expect("usage update encode");
+    assert_eq!(serde_json::from_str::<Value>(&encoded).unwrap(), input);
+}
+
+#[test]
 fn received_unknown_event_preserves_carrier_and_exact_wire_size() {
     let input = fixture("unknown_event.json");
     let observation = decode_received_server_event(EventCarrier::OrderedOaiEvents, &input)
