@@ -21,7 +21,8 @@ pub use protocol::{
     FunctionCallId, FunctionCallOutput, FunctionTool, InputTextContent, InputTranscriptAdded,
     ProviderCallId, ReceivedServerEvent, ResponsesConfig, ResponsesDelegation, ServerEvent,
     SessionAudio, SessionAudioOutput, SessionContextAppend, SessionContextAppended, SessionStarted,
-    StartedSession, TranscriptItem, Turn, TurnCreated, TurnDelta, TurnDone, UnknownEvent,
+    SessionUsageUpdated, StartedSession, TranscriptItem, Turn, TurnCreated, TurnDelta, TurnDone,
+    UnknownEvent,
 };
 pub use redaction::{Direction, TerminalClass, WireSummary};
 pub use transport::{
