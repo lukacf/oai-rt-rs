@@ -19,6 +19,44 @@ A Rust client for the [OpenAI Realtime API](https://platform.openai.com/docs/gui
 - Optional `OpenAI-Safety-Identifier` headers for WebSocket, REST session creation, and WebRTC calls.
 - Async interface using `tokio` and `tokio-tungstenite`.
 - Client-side validation for GA constraints (PCM 24kHz, output modalities, 15MB audio chunks).
+- Feature-gated mechanical support for the private, pre-release GPT Live protocol.
+
+## Experimental GPT Live protocol
+
+Enable the private GPT Live protocol surface explicitly:
+
+```toml
+[dependencies]
+oai-rt-rs = { version = "0.4.1", features = ["experimental-gpt-live"] }
+```
+
+This feature is intentionally separate from the GA Realtime API. It provides
+redaction-safe wire types, bounded codecs, WebRTC call creation, sideband
+transport, transcript and turn events, and client-managed delegation context.
+It does not select a model, obtain OAuth credentials, assign application
+identity, execute delegated work, or decide what provider events mean to an
+application.
+
+For an application-owned executor, configure `delegation.type = "client"`.
+The provider can emit a typed `delegation.created` event, after which the
+application performs the work under its own authority and returns context with
+`delegation.context.append`. The current Meerkat integration uses this mode so
+that Meerkat, rather than a provider-selected Responses model, owns execution.
+
+The crate also mechanically encodes `delegation.type = "responses"`, its
+nested function-tool configuration, and
+`delegation.function_call_output.create`. That mode is not qualified for
+production use here: direct probes reached session startup but failed inside
+the provider before any raw function-call event was observed. Its inbound call
+schema, output acknowledgement, continuation, cancellation, and settlement
+lifecycle therefore remain unproven. Nested `responses.instructions` has only
+been shown to be syntactically accepted, not behaviorally effective.
+
+`session.usage.updated` is exposed as an opaque observation. Its body must not
+be used as billing, execution, or session authority.
+
+See [Experimental GPT Live protocol](docs/experimental-gpt-live.md) for the
+supported boundary and a client-delegation example.
 
 ## Quickstart (Voice-first SDK)
 
