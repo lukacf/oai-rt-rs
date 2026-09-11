@@ -8,7 +8,10 @@ use oai_rt_rs::live::{
     SessionConfig, SessionUpdate, Tool, ToolChoice, ToolChoiceMode,
 };
 use serde_json::{Value, json};
-use std::time::Duration;
+use std::{
+    collections::{BTreeMap, VecDeque},
+    time::Duration,
+};
 use tokio::time::{Instant, timeout};
 
 fn config(diagnostic: bool) -> SessionConfig {
@@ -128,6 +131,103 @@ async fn update_before_work(connection: &mut LiveConnection) -> Result<()> {
 }
 
 #[derive(Default)]
+struct TextPart {
+    item_id: String,
+    text: String,
+    saw_delta: bool,
+    done: bool,
+}
+
+#[derive(Default)]
+struct ResponseText {
+    responses: BTreeMap<ResponseKey, BTreeMap<(i64, i64), TextPart>>,
+    bytes: usize,
+    parts: usize,
+}
+
+impl ResponseText {
+    fn observe(&mut self, response: &ResponseKey, event: &ResponseEvent) -> Result<()> {
+        let (item_id, output_index, content_index, text, done) = match event {
+            ResponseEvent::OutputTextDelta {
+                item_id,
+                output_index,
+                content_index,
+                delta,
+                ..
+            } => (item_id, *output_index, *content_index, delta, false),
+            ResponseEvent::OutputTextDone {
+                item_id,
+                output_index,
+                content_index,
+                text,
+                ..
+            } => (item_id, *output_index, *content_index, text, true),
+            _ => return Ok(()),
+        };
+        let existing_response = self.responses.get(response);
+        let existing =
+            existing_response.and_then(|parts| parts.get(&(output_index, content_index)));
+        if let Some(part) = existing {
+            if part.item_id != *item_id {
+                return Err(Error::Invalid("text part changed item identity".into()));
+            }
+            if done && (part.saw_delta || part.done) && part.text != *text {
+                return Err(Error::Invalid(
+                    "text done contradicts the same part's accumulated text".into(),
+                ));
+            }
+            if !done && part.done {
+                return Err(Error::Invalid(
+                    "text delta arrived after the same part was done".into(),
+                ));
+            }
+        } else if self.parts == 64 {
+            return Err(Error::Invalid("probe text part capacity exceeded".into()));
+        }
+        let metadata = if existing.is_none() { item_id.len() } else { 0 }
+            + if existing_response.is_none() {
+                response.response_id.len() + response.delegation_id.as_ref().map_or(0, String::len)
+            } else {
+                0
+            };
+        let append = !done || existing.is_none_or(|part| !part.saw_delta && !part.done);
+        let bytes = self
+            .bytes
+            .checked_add(metadata)
+            .and_then(|bytes| bytes.checked_add(if append { text.len() } else { 0 }))
+            .filter(|bytes| *bytes <= 65_536)
+            .ok_or_else(|| Error::Invalid("probe text capacity exceeded".into()))?;
+        let new_part = existing.is_none();
+        let part = self
+            .responses
+            .entry(response.clone())
+            .or_default()
+            .entry((output_index, content_index))
+            .or_insert_with(|| TextPart {
+                item_id: item_id.clone(),
+                ..TextPart::default()
+            });
+        if append {
+            part.text.push_str(text);
+        }
+        part.saw_delta |= !done;
+        part.done = done;
+        self.bytes = bytes;
+        self.parts += usize::from(new_part);
+        Ok(())
+    }
+
+    fn render(&self, response: &ResponseKey) -> String {
+        self.responses
+            .get(response)
+            .into_iter()
+            .flat_map(|parts| parts.values())
+            .map(|part| part.text.as_str())
+            .collect()
+    }
+}
+
+#[derive(Default)]
 struct Probe {
     tracker: FunctionCallTracker,
     first: Option<ResponseKey>,
@@ -135,13 +235,92 @@ struct Probe {
     results_submitted: bool,
     continuation_sent: bool,
     update_acked: bool,
-    backend_text: String,
+    response_text: ResponseText,
     voice_text: String,
     speech: support::Speech,
     timeline: Vec<Value>,
+    text_diagnostics: VecDeque<Value>,
+    omitted_text_diagnostics: u64,
 }
 
 impl Probe {
+    fn backend_text(&self) -> String {
+        self.continuation
+            .as_ref()
+            .map(|key| self.response_text.render(key))
+            .unwrap_or_default()
+    }
+
+    fn capture_text(&mut self, fact: Value) {
+        if self.text_diagnostics.len() == 64 {
+            self.text_diagnostics.pop_front();
+            self.omitted_text_diagnostics = self.omitted_text_diagnostics.saturating_add(1);
+        }
+        self.text_diagnostics.push_back(fact);
+    }
+
+    fn capture_response_text(&mut self, key: &ResponseKey, event: &ResponseEvent) {
+        let response = if self.first.as_ref() == Some(key) {
+            1
+        } else {
+            2
+        };
+        let mut fact = match event {
+            ResponseEvent::OutputTextDelta {
+                output_index,
+                content_index,
+                delta,
+                ..
+            } => json!({
+                "event":"response.output_text.delta","item":output_index,"part":content_index,
+                "actual_synthetic_text":synthetic_preview(delta),
+            }),
+            ResponseEvent::OutputTextDone {
+                output_index,
+                content_index,
+                text,
+                ..
+            } => json!({
+                "event":"response.output_text.done","item":output_index,"part":content_index,
+                "actual_synthetic_text":synthetic_preview(text),
+            }),
+            ResponseEvent::OutputItemAdded {
+                output_index, item, ..
+            }
+            | ResponseEvent::OutputItemDone {
+                output_index, item, ..
+            } => {
+                let (item_type, message_text) = match item {
+                    oai_rt_rs::live::ResponseEventItem::FunctionCall(_) => {
+                        ("function_call", Vec::new())
+                    }
+                    oai_rt_rs::live::ResponseEventItem::Other { item_type, raw } => {
+                        let text = raw
+                            .get("content")
+                            .and_then(Value::as_array)
+                            .into_iter()
+                            .flatten()
+                            .take(4)
+                            .filter(|part| part["type"] == "output_text")
+                            .filter_map(|part| part.get("text").and_then(Value::as_str))
+                            .map(synthetic_preview)
+                            .collect();
+                        (item_type.as_str(), text)
+                    }
+                };
+                json!({"event":if matches!(event,ResponseEvent::OutputItemAdded { .. }) {
+                    "response.output_item.added"
+                } else { "response.output_item.done" },"item":output_index,
+                    "item_type":synthetic_preview(item_type),"message_text_parts":message_text})
+            }
+            _ => return,
+        };
+        fact["response"] = json!(response);
+        fact["applied_to_continuation"] = json!(self.continuation.as_ref() == Some(key));
+        fact["aggregate_before"] = synthetic_preview(&self.backend_text());
+        self.capture_text(fact);
+    }
+
     fn record(&mut self, fact: Value) -> Result<()> {
         if self.timeline.len() >= 128 {
             return Err(Error::Invalid("probe timeline capacity exceeded".into()));
@@ -184,6 +363,15 @@ impl Probe {
         let key = match attribution {
             ResponseAttribution::Owned(key) => key,
             ResponseAttribution::Unowned if matches!(event, ResponseEvent::Unknown { .. }) => {
+                if let ResponseEvent::Unknown { event_type, raw } = event {
+                    if event_type.contains("text") {
+                        self.capture_text(json!({"event":synthetic_preview(event_type),
+                            "response":null,"scope_available":scope.is_some(),
+                            "item":raw.get("output_index").and_then(Value::as_i64),
+                            "part":raw.get("content_index").and_then(Value::as_i64),
+                            "has_delta":raw.get("delta").is_some(),"has_text":raw.get("text").is_some()}));
+                    }
+                }
                 return Ok(None);
             }
             ResponseAttribution::Unowned => {
@@ -193,6 +381,7 @@ impl Probe {
                 return Err(Error::Invalid("ambiguous backend event ownership".into()));
             }
         };
+        self.capture_response_text(&key, event);
         if let ResponseEvent::Lifecycle { kind, response, .. } = event {
             if *kind == ResponseLifecycleKind::Created {
                 self.created(&key)?;
@@ -230,18 +419,7 @@ impl Probe {
             }
             self.record(json!({"finished_function_item":true,"owning_response_complete":false}))?;
         }
-        if self.continuation.as_ref() == Some(&key) {
-            match event {
-                ResponseEvent::OutputTextDelta { delta, .. } => {
-                    append_bounded(&mut self.backend_text, delta)?;
-                }
-                ResponseEvent::OutputTextDone { text, .. } => {
-                    self.backend_text.clear();
-                    append_bounded(&mut self.backend_text, text)?;
-                }
-                _ => {}
-            }
-        }
+        self.response_text.observe(&key, event)?;
         Ok(None)
     }
 
@@ -253,12 +431,13 @@ impl Probe {
                     .ready_calls(key)
                     .is_some_and(<[FunctionCall]>::is_empty)
             })
-            && self.backend_text.contains("NATIVE_BLUE_SEVEN")
+            && self.backend_text().contains("NATIVE_BLUE_SEVEN")
             && self.voice_text.contains("The blue test passed")
             && self.speech.qualified()
     }
 
     fn report(&self, diagnostic: bool) -> Value {
+        let backend_text = self.backend_text();
         json!({
             "probe":"public-live-managed-responses",
             "complete_function_calls":self.first.as_ref().and_then(|key| self.tracker.calls(key)).map_or(0, <[FunctionCall]>::len),
@@ -266,13 +445,39 @@ impl Probe {
             "continuation_sent":self.continuation_sent,
             "continuation_created":self.continuation.is_some(),
             "continuation_terminal":self.continuation.as_ref().and_then(|key| self.tracker.terminal(key)).map(|kind| format!("{kind:?}")),
-            "backend_result_matched":self.backend_text.contains("NATIVE_BLUE_SEVEN"),
+            "backend_result_matched":backend_text.contains("NATIVE_BLUE_SEVEN"),
+            "actual_synthetic_backend_text":synthetic_preview(&backend_text),
+            "text_diagnostics":self.text_diagnostics,"omitted_text_diagnostics":self.omitted_text_diagnostics,
             "voice_result_matched":self.voice_text.contains("The blue test passed"),
             "speech":self.speech.report(),"sparse_update_acked":self.update_acked,
             "update_during_handoff":diagnostic,"call_response_identity_verified":true,
             "cleared_snapshots_verified":true,"timeline":self.timeline,
         })
     }
+}
+
+fn synthetic_preview(text: &str) -> Value {
+    let prefix: String = text.chars().take(512).collect();
+    let mut redacted = false;
+    let preview: String = prefix
+        .split_inclusive(char::is_whitespace)
+        .map(|word| {
+            if [
+                "resp_", "live_", "call_", "fc_", "msg_", "del_", "evt_", "sk-",
+            ]
+            .iter()
+            .any(|prefix| word.contains(prefix))
+            {
+                redacted = true;
+                "[identifier] "
+            } else {
+                word
+            }
+        })
+        .collect();
+    json!({"text":preview.chars().take(512).collect::<String>(),
+        "bytes":text.len(),"truncated":text.chars().nth(512).is_some() || preview.chars().nth(512).is_some(),
+        "identifiers_redacted":redacted})
 }
 
 fn append_bounded(target: &mut String, text: &str) -> Result<()> {
@@ -452,6 +657,114 @@ mod exercise_tests {
     use tokio_tungstenite::{WebSocketStream, accept_async, tungstenite::Message};
 
     type Peer = WebSocketStream<TcpStream>;
+
+    fn text_event(done: bool, item: i64, part: i64, text: &str) -> ResponseEvent {
+        ResponseEvent::decode(json!({
+            "type":if done { "response.output_text.done" } else { "response.output_text.delta" },
+            "sequence_number":0,"item_id":format!("item-{item}"),"output_index":item,
+            "content_index":part,"delta":text,"text":text,"logprobs":[]
+        }))
+        .unwrap()
+    }
+
+    fn text_owner(id: &str) -> ResponseKey {
+        ResponseKey {
+            delegation_id: Some("scope".into()),
+            response_id: id.into(),
+        }
+    }
+
+    #[test]
+    fn response_text_orders_messages_and_parts_without_erasing_earlier_text() {
+        let first = text_owner("r1");
+        let second = text_owner("r2");
+        let mut text = ResponseText::default();
+        text.observe(&first, &text_event(true, 0, 0, "unrelated first response"))
+            .unwrap();
+        text.observe(&second, &text_event(true, 1, 0, "SEVEN"))
+            .unwrap();
+        text.observe(&second, &text_event(false, 0, 1, "BLUE_"))
+            .unwrap();
+        text.observe(&second, &text_event(true, 0, 1, "BLUE_"))
+            .unwrap();
+        text.observe(&second, &text_event(false, 0, 0, "NATIVE"))
+            .unwrap();
+        text.observe(&second, &text_event(false, 0, 0, "_"))
+            .unwrap();
+        text.observe(&second, &text_event(true, 0, 0, "NATIVE_"))
+            .unwrap();
+        text.observe(&second, &text_event(true, 2, 0, "")).unwrap();
+        assert_eq!(text.render(&second), "NATIVE_BLUE_SEVEN");
+        assert_eq!(text.render(&first), "unrelated first response");
+        text.observe(&second, &text_event(true, 2, 0, "")).unwrap();
+        assert_eq!(text.render(&second), "NATIVE_BLUE_SEVEN");
+    }
+
+    #[test]
+    fn same_part_done_must_match_deltas_and_done_only_is_supported() {
+        let owner = text_owner("r");
+        let mut text = ResponseText::default();
+        text.observe(&owner, &text_event(false, 0, 0, "NATIVE_BLUE_SEVEN"))
+            .unwrap();
+        assert!(text.observe(&owner, &text_event(true, 0, 0, "")).is_err());
+        assert_eq!(text.render(&owner), "NATIVE_BLUE_SEVEN");
+        text.observe(&owner, &text_event(true, 0, 0, "NATIVE_BLUE_SEVEN"))
+            .unwrap();
+        assert!(
+            text.observe(&owner, &text_event(false, 0, 0, "later"))
+                .is_err()
+        );
+        text.observe(&owner, &text_event(true, 1, 0, " done only"))
+            .unwrap();
+        assert_eq!(text.render(&owner), "NATIVE_BLUE_SEVEN done only");
+        let mut wrong_item = text_event(true, 1, 0, " done only");
+        if let ResponseEvent::OutputTextDone { item_id, .. } = &mut wrong_item {
+            *item_id = "different".into();
+        }
+        assert!(text.observe(&owner, &wrong_item).is_err());
+    }
+
+    #[test]
+    fn response_text_has_total_byte_and_part_bounds() {
+        let owner = text_owner("r");
+        let mut text = ResponseText::default();
+        assert!(
+            text.observe(&owner, &text_event(true, 0, 0, &"x".repeat(65_537)))
+                .is_err()
+        );
+        assert_eq!(text.parts, 0);
+        for index in 0..64 {
+            text.observe(&owner, &text_event(true, index, 0, ""))
+                .unwrap();
+        }
+        assert!(text.observe(&owner, &text_event(true, 64, 0, "")).is_err());
+        assert_eq!(text.parts, 64);
+    }
+
+    #[test]
+    fn synthetic_text_diagnostics_are_bounded_and_do_not_log_provider_ids() {
+        let preview = synthetic_preview(&format!(
+            "NATIVE_BLUE_SEVEN resp_private\n{}",
+            "x".repeat(600)
+        ));
+        assert!(
+            preview["text"]
+                .as_str()
+                .unwrap()
+                .contains("NATIVE_BLUE_SEVEN")
+        );
+        assert!(!preview["text"].as_str().unwrap().contains("resp_private"));
+        assert_eq!(preview["identifiers_redacted"], true);
+        assert_eq!(preview["truncated"], true);
+        assert!(preview["text"].as_str().unwrap().chars().count() <= 512);
+        let mut probe = Probe::default();
+        for index in 0..80 {
+            probe.capture_text(json!({"event_index":index}));
+        }
+        assert_eq!(probe.text_diagnostics.len(), 64);
+        assert_eq!(probe.omitted_text_diagnostics, 16);
+        assert_eq!(probe.text_diagnostics.back().unwrap()["event_index"], 79);
+    }
 
     async fn emit(peer: &mut Peer, frame: Value) {
         peer.send(Message::Text(frame.to_string().into()))
