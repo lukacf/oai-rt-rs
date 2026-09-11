@@ -327,6 +327,20 @@ async fn observe_frame(
     Ok(())
 }
 
+fn latch_failure(probe: &mut Probe, first: &mut Option<Error>, error: Error) -> Result<()> {
+    if let Error::Provider(provider) = &error {
+        probe.record(
+            json!({"provider_error_code":provider.code,"correlation":provider.client_event_id}),
+        )?;
+    } else {
+        probe.record(json!({"unexpected_error":error.to_string()}))?;
+    }
+    if first.is_none() {
+        *first = Some(error);
+    }
+    Ok(())
+}
+
 async fn exercise(connection: &mut LiveConnection, diagnostic: bool) -> Result<Value> {
     if !diagnostic {
         update_before_work(connection).await?;
@@ -344,35 +358,42 @@ async fn exercise(connection: &mut LiveConnection, diagnostic: bool) -> Result<V
         update_acked: !diagnostic,
         ..Probe::default()
     };
-    let mut provider_error = None;
+    let mut unexpected = None;
     let deadline = Instant::now() + Duration::from_secs(25);
     loop {
-        let frame = if let Ok(result) = timeout(
+        let Ok(result) = timeout(
             deadline.saturating_duration_since(Instant::now()),
             connection.next_event(),
         )
         .await
-        {
-            result?.ok_or(Error::UnconfirmedClose)?
-        } else {
+        else {
             eprintln!("{}", probe.report(diagnostic));
-            return Err(provider_error.map_or(Error::Timeout, Error::Provider));
+            return Err(unexpected.unwrap_or(Error::Timeout));
         };
-        if let ServerEvent::Error { error, .. } = &frame.event {
-            probe.record(
-                json!({"provider_error_code":error.code,"correlation":error.client_event_id}),
-            )?;
-            provider_error = Some(error.clone());
+        let frame = match result {
+            Ok(Some(frame)) => frame,
+            Ok(None) => {
+                eprintln!("{}", probe.report(diagnostic));
+                return Err(unexpected.unwrap_or(Error::UnconfirmedClose));
+            }
+            Err(error) => {
+                latch_failure(&mut probe, &mut unexpected, error)?;
+                continue;
+            }
+        };
+        if let Err(error) = support::check_frame(&frame) {
+            latch_failure(&mut probe, &mut unexpected, error)?;
+            continue;
         }
         if let Err(error) = observe_frame(connection, &mut probe, &frame, diagnostic).await {
             eprintln!("{}", probe.report(diagnostic));
-            return Err(error);
+            return Err(unexpected.unwrap_or(error));
         }
         if probe.successful() {
             let report = probe.report(diagnostic);
-            if let Some(error) = provider_error {
+            if let Some(error) = unexpected {
                 eprintln!("{report}");
-                return Err(Error::Provider(error));
+                return Err(error);
             }
             return Ok(report);
         }
@@ -420,4 +441,162 @@ async fn main() -> Result<()> {
     report["final_seconds"] = json!(usage.seconds);
     println!("{report}");
     Ok(())
+}
+
+#[cfg(test)]
+mod exercise_tests {
+    use super::*;
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use futures::{SinkExt, StreamExt};
+    use tokio::net::{TcpListener, TcpStream};
+    use tokio_tungstenite::{WebSocketStream, accept_async, tungstenite::Message};
+
+    type Peer = WebSocketStream<TcpStream>;
+
+    async fn emit(peer: &mut Peer, frame: Value) {
+        peer.send(Message::Text(frame.to_string().into()))
+            .await
+            .unwrap();
+    }
+
+    async fn receive(peer: &mut Peer) {
+        timeout(Duration::from_secs(2), peer.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+    }
+
+    fn lifecycle(kind: &str, id: &str) -> Value {
+        json!({"type":format!("response.{kind}"),"sequence_number":0,"response":{
+            "id":id,"created_at":1,"status":if kind=="completed" {"completed"} else {"in_progress"},"output":[]
+        }})
+    }
+
+    async fn response(peer: &mut Peer, event: Value) {
+        emit(
+            peer,
+            json!({"type":"response.event","event_id":"e","delegation_id":"d","event":event}),
+        )
+        .await;
+    }
+
+    async fn mock_backend(mut peer: Peer, injected: u8) {
+        let session = json!({"id":"s","model":"gpt-live-1","status":"active","expires_at":1});
+        receive(&mut peer).await;
+        emit(
+            &mut peer,
+            json!({"type":"session.started","event_id":"start","session":session}),
+        )
+        .await;
+        receive(&mut peer).await;
+        emit(
+            &mut peer,
+            json!({"type":"session.updated","event_id":"update",
+            "client_event_id":"backend-update","session":session}),
+        )
+        .await;
+        receive(&mut peer).await;
+        receive(&mut peer).await;
+        response(&mut peer, lifecycle("created", "r1")).await;
+        response(
+            &mut peer,
+            json!({"type":"response.output_item.done","sequence_number":1,"output_index":0,
+            "item":{"type":"function_call","id":"fc","call_id":"call","name":"probe_echo",
+                "arguments":"{\"code\":\"NATIVE_BLUE_SEVEN\"}","status":"completed"}}),
+        )
+        .await;
+        response(&mut peer, lifecycle("completed", "r1")).await;
+        receive(&mut peer).await;
+        receive(&mut peer).await;
+        let error = match injected {
+            1 => Some(
+                json!({"type":"transport.failed","event_id":"failed","session_id":"s",
+                "error":{"type":"call_error","code":"failed","message":"synthetic"}}),
+            ),
+            2 => Some(json!({"type":"error","event_id":"failed",
+                "error":{"type":"invalid_request_error","code":null,"message":"synthetic"}})),
+            3 => Some(json!({"type":"session.output_audio.delta","delta":123})),
+            4 => Some(
+                json!({"type":"response.event","event_id":"bad","event":{"type":"response.completed"}}),
+            ),
+            _ => None,
+        };
+        if let Some(error) = error {
+            emit(&mut peer, error).await;
+        }
+        response(&mut peer, lifecycle("created", "r2")).await;
+        response(&mut peer, json!({"type":"response.output_text.delta","sequence_number":1,
+            "item_id":"message","output_index":0,"content_index":0,"logprobs":[],"delta":"NATIVE_BLUE_SEVEN"})).await;
+        response(&mut peer, json!({"type":"response.output_item.done","sequence_number":2,"output_index":0,
+            "item":{"type":"message","id":"message","role":"assistant","content":[],"status":"completed"}})).await;
+        response(&mut peer, lifecycle("completed", "r2")).await;
+        emit(
+            &mut peer,
+            json!({"type":"session.output_transcript.delta","event_id":"voice",
+            "delta":"The blue test passed.","start_ms":0,"end_ms":200}),
+        )
+        .await;
+        let pcm: Vec<_> = (0..4800).flat_map(|_| 1000_i16.to_le_bytes()).collect();
+        emit(
+            &mut peer,
+            json!({"type":"session.output_audio.delta","delta":STANDARD.encode(pcm)}),
+        )
+        .await;
+        emit(
+            &mut peer,
+            json!({"type":"info","event_id":"after","code":"after-evidence","message":"synthetic"}),
+        )
+        .await;
+        receive(&mut peer).await;
+        emit(
+            &mut peer,
+            json!({"type":"session.closed","event_id":"closed","session":session,
+            "reason":"close_requested","usage":{"seconds":1}}),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn exercise_latches_failures_but_consumes_later_success_and_final_usage() {
+        for injected in 0..5 {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let client = LiveClient::with_options(
+                "synthetic",
+                oai_rt_rs::live::ClientOptions {
+                    base_url: format!("http://{}/v1/", listener.local_addr().unwrap())
+                        .parse()
+                        .unwrap(),
+                    request_timeout: Duration::from_secs(2),
+                    ..oai_rt_rs::live::ClientOptions::default()
+                },
+            )
+            .unwrap();
+            let server = tokio::spawn(async move {
+                let (tcp, _) = listener.accept().await.unwrap();
+                mock_backend(accept_async(tcp).await.unwrap(), injected).await;
+            });
+            let mut connection = client.connect(config(false)).await.unwrap();
+            let result = timeout(Duration::from_secs(2), exercise(&mut connection, false))
+                .await
+                .unwrap();
+            match injected {
+                0 => {
+                    let report = result.unwrap();
+                    assert_eq!(report["continuation_terminal"], "Completed");
+                    assert_eq!(report["voice_result_matched"], true);
+                }
+                1 => assert!(matches!(result, Err(Error::Transport(_)))),
+                2 => assert!(matches!(result, Err(Error::Provider(_)))),
+                _ => assert!(matches!(result, Err(Error::MalformedEvent { .. }))),
+            }
+            let marker = connection.next_event().await.unwrap().unwrap();
+            assert!(
+                matches!(marker.event, ServerEvent::Info {code,..} if code=="after-evidence"),
+                "exercise must keep observing after failure, not return before later lifecycle/audio evidence"
+            );
+            support::close(&mut connection).await.unwrap();
+            server.await.unwrap();
+        }
+    }
 }

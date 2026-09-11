@@ -105,6 +105,8 @@ class PeerEvents:
             event = strict_json(message)
             if not isinstance(event, dict) or not isinstance(event.get("type"), str):
                 raise ValueError("missing event discriminator")
+            if "client_event_id" in event and not isinstance(event["client_event_id"], str):
+                raise ValueError("malformed outer client event correlation")
             kind = event["type"]
             if kind in {"error", "session.output_transcript.delta", "session.closed", "response.event"}:
                 if not isinstance(event.get("event_id"), str):
@@ -115,6 +117,10 @@ class PeerEvents:
                         or not isinstance(error.get("type"), str) or "code" not in error
                         or error["code"] is not None and not isinstance(error["code"], str)):
                     raise ValueError("malformed provider error")
+                if "client_event_id" in error and not isinstance(error["client_event_id"], str):
+                    raise ValueError("malformed nested client event correlation")
+                if "param" in error and error["param"] is not None and not isinstance(error["param"], str):
+                    raise ValueError("malformed error parameter")
                 expected = (self.restricted
                             and error.get("type") == "invalid_request_error"
                             and error.get("code") == "event_not_allowed"

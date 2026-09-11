@@ -83,6 +83,37 @@ class EvidenceTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     events.check()
 
+    def test_permission_exception_validates_optional_fields_before_whitelisting(self):
+        error = {"type": "invalid_request_error", "code": "event_not_allowed",
+                 "message": "synthetic denial", "client_event_id": "browser-restricted"}
+        for invalid in (None, 123, {}, [], True):
+            events = PeerEvents(True)
+            events.observe(json.dumps({"type": "error", "event_id": "e",
+                                       "client_event_id": invalid, "error": error}))
+            self.assertFalse(events.permission_denied)
+            with self.assertRaises(RuntimeError):
+                events.check()
+        for invalid in ({}, [], 123, True):
+            events = PeerEvents(True)
+            events.observe(json.dumps({"type": "error", "event_id": "e",
+                                       "error": dict(error, param=invalid)}))
+            self.assertFalse(events.permission_denied)
+            with self.assertRaises(RuntimeError):
+                events.check()
+        for valid in (None, "session.client"):
+            events = PeerEvents(True)
+            events.observe(json.dumps({"type": "error", "event_id": "e", "client_event_id": "outer",
+                                       "future": {"retained": True},
+                                       "error": dict(error, param=valid, future={"any": [None, 1]})}))
+            self.assertTrue(events.permission_denied)
+            events.check()
+        events = PeerEvents(True)
+        events.observe(json.dumps({"type": "error", "event_id": "e",
+                                   "client_event_id": "browser-restricted",
+                                   "error": dict(error, client_event_id="unrelated")}))
+        with self.assertRaises(RuntimeError):
+            events.check()
+
     def test_safe_final_usage_report_never_relays_unrelated_content(self):
         report = final_usage_report(b'private text\n{"final_usage_confirmed":true,"final_seconds":2,"sdp":"private"}')
         self.assertEqual(report, {"rust_final_usage_confirmed": True, "final_seconds": 2})
