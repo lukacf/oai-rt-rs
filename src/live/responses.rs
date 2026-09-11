@@ -23,6 +23,14 @@ struct Bounds {
     max_len: Option<usize>,
     min: Option<i64>,
     max: Option<i64>,
+    min_number: Option<f64>,
+    max_number: Option<f64>,
+    min_items: Option<usize>,
+    max_items: Option<usize>,
+    max_properties: Option<usize>,
+    key_max_len: Option<usize>,
+    identifier: bool,
+    tunnel_id: bool,
     uri: bool,
 }
 
@@ -41,13 +49,34 @@ impl Check for String {
         if bounds.uri && url::Url::parse(self).is_err() {
             return Err("expected an absolute URI".into());
         }
+        if bounds.identifier
+            && (self.is_empty()
+                || !self
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')))
+        {
+            return Err("expected an ASCII identifier".into());
+        }
+        if bounds.tunnel_id
+            && !self.strip_prefix("tunnel_").is_some_and(|suffix| {
+                suffix.len() == 32
+                    && suffix
+                        .bytes()
+                        .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+            })
+        {
+            return Err("expected a documented tunnel identifier".into());
+        }
         Ok(())
     }
 }
 
 impl Check for f64 {
-    fn check(&self, _: &Bounds) -> Result<(), String> {
-        if !self.is_finite() {
+    fn check(&self, bounds: &Bounds) -> Result<(), String> {
+        if !self.is_finite()
+            || bounds.min_number.is_some_and(|min| *self < min)
+            || bounds.max_number.is_some_and(|max| *self > max)
+        {
             return Err("number outside the documented bounds".into());
         }
         Ok(())
@@ -95,12 +124,24 @@ impl<T: Check> Check for Nullable<T> {
 
 impl<T: Check> Check for Vec<T> {
     fn check(&self, bounds: &Bounds) -> Result<(), String> {
+        if bounds.min_items.is_some_and(|min| self.len() < min)
+            || bounds.max_items.is_some_and(|max| self.len() > max)
+        {
+            return Err("array length outside the documented bounds".into());
+        }
         self.iter().try_for_each(|value| value.check(bounds))
     }
 }
 
 impl<T: Check> Check for BTreeMap<String, T> {
     fn check(&self, bounds: &Bounds) -> Result<(), String> {
+        if bounds.max_properties.is_some_and(|max| self.len() > max)
+            || bounds
+                .key_max_len
+                .is_some_and(|max| self.keys().any(|key| key.chars().count() > max))
+        {
+            return Err("record size outside the documented bounds".into());
+        }
         self.values().try_for_each(|value| value.check(bounds))
     }
 }
@@ -131,6 +172,7 @@ macro_rules! model {
         required_nullable { $($q:ident: $qt:ty $([$($qb:ident: $qv:expr),*])?),* }
     }) => {
         $(#[$meta])*
+        #[doc = ""]
         #[doc = concat!("Typed shared Responses schema: `", stringify!($name), "`.")]
         // A uniform schema macro also covers records containing floating-point values.
         #[allow(clippy::derive_partial_eq_without_eq)]
@@ -213,6 +255,7 @@ macro_rules! literals {
 macro_rules! union {
     ($(#[$meta:meta])* $name:ident { $($variant:ident($ty:ty)),+ }) => {
         $(#[$meta])*
+        #[doc = ""]
         #[doc = concat!("All documented alternatives for `", stringify!($name), "`.")]
         // Alternatives retain protocol names and may contain floating-point values.
         #[allow(clippy::derive_partial_eq_without_eq, clippy::enum_variant_names)]
@@ -354,8 +397,8 @@ literals! { ResponseFileSearchCallType { FileSearchCall = "file_search_call" } }
 union! { ResponseFileSearchCallResultsEntryAttributesValue { String(String), F64(f64), Bool(bool) } }
 model! { ResponseFileSearchCallResultsEntry {
     required { }
-    optional { file_id: String, filename: String, score: f64, text: String }
-    nullable { attributes: BTreeMap<String, ResponseFileSearchCallResultsEntryAttributesValue> }
+    optional { file_id: String, filename: String, score: f64 [min_number: Some(0.0), max_number: Some(1.0)], text: String }
+    nullable { attributes: BTreeMap<String, ResponseFileSearchCallResultsEntryAttributesValue> [max_properties: Some(16), key_max_len: Some(64), max_len: Some(512)] }
     required_nullable { }
 } }
 model! { ResponseFileSearchCall {
@@ -548,10 +591,30 @@ union! {
     /// from the corresponding message-input parts.
     ResponseToolOutputContent { InputTextContent(ResponseInputTextContent), InputImageContent(ResponseInputImageContent), InputFileContent(ResponseInputFileContent) }
 }
-union! {
-    /// A function result encoded as text or an ordered list of content parts.
-    /// To return structured JSON, serialize it into the text alternative.
-    ResponseFunctionOutput { Text(String), Content(Vec<ResponseToolOutputContent>) }
+/// A function result encoded as text or an ordered list of content parts.
+///
+/// To return structured JSON, serialize it into the text alternative. The text
+/// alternative is limited to 10,485,760 characters; content parts have their own
+/// independent bounds.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ResponseFunctionOutput {
+    Text(String),
+    Content(Vec<ResponseToolOutputContent>),
+}
+
+redacted_debug!(ResponseFunctionOutput);
+
+impl Check for ResponseFunctionOutput {
+    fn check(&self, _: &Bounds) -> Result<(), String> {
+        match self {
+            Self::Text(text) => text.check(&Bounds {
+                max_len: Some(10_485_760),
+                ..Bounds::default()
+            }),
+            Self::Content(parts) => parts.check(&Bounds::default()),
+        }
+    }
 }
 literals! { ResponseFunctionCallOutputType { FunctionCallOutput = "function_call_output" } }
 model! { ResponseProgramCaller {
@@ -564,13 +627,13 @@ union! { ResponseToolCaller { Direct(ResponseDirect), Program(ResponseProgramCal
 model! { ResponseFunctionCallOutput {
     required { output: ResponseFunctionOutput, r#type: ResponseFunctionCallOutputType }
     optional { }
-    nullable { id: String, call_id: String [min_len: Some(1), max_len: Some(64)], caller: ResponseToolCaller, name: String [min_len: Some(1), max_len: Some(128)], namespace: String [min_len: Some(1), max_len: Some(64)], status: ResponseMessageStatus }
+    nullable { id: String, call_id: String [min_len: Some(1), max_len: Some(64)], caller: ResponseToolCaller, name: String [min_len: Some(1), max_len: Some(128)], namespace: String [min_len: Some(1), max_len: Some(64), identifier: true], status: ResponseMessageStatus }
     required_nullable { }
 } }
 literals! { ResponseToolSearchCallType { ToolSearchCall = "tool_search_call" } }
 literals! { ResponseToolSearchCallExecution { Server = "server", Client = "client" } }
 model! { ResponseToolSearchCall {
-    required { arguments: Value, r#type: ResponseToolSearchCallType }
+    required { arguments: BTreeMap<String, Value>, r#type: ResponseToolSearchCallType }
     optional { execution: ResponseToolSearchCallExecution }
     nullable { id: String, call_id: String [min_len: Some(1), max_len: Some(64)], status: ResponseMessageStatus }
     required_nullable { }
@@ -593,7 +656,7 @@ model! { ResponseComparisonFilter {
     nullable { }
     required_nullable { }
 } }
-union! { ResponseCompoundFilterFiltersEntry { ComparisonFilter(ResponseComparisonFilter), Value(Value) } }
+union! { ResponseCompoundFilterFiltersEntry { ComparisonFilter(ResponseComparisonFilter), CompoundFilter(ResponseCompoundFilter) } }
 literals! { ResponseCompoundFilterType { And = "and", Or = "or" } }
 model! { ResponseCompoundFilter {
     required { filters: Vec<ResponseCompoundFilterFiltersEntry>, r#type: ResponseCompoundFilterType }
@@ -611,13 +674,13 @@ model! { ResponseFileSearchRankingOptionsHybridSearch {
 literals! { ResponseFileSearchRankingOptionsRanker { Auto = "auto", Default20241115 = "default-2024-11-15" } }
 model! { ResponseFileSearchRankingOptions {
     required { }
-    optional { hybrid_search: ResponseFileSearchRankingOptionsHybridSearch, ranker: ResponseFileSearchRankingOptionsRanker, score_threshold: f64 }
+    optional { hybrid_search: ResponseFileSearchRankingOptionsHybridSearch, ranker: ResponseFileSearchRankingOptionsRanker, score_threshold: f64 [min_number: Some(0.0), max_number: Some(1.0)] }
     nullable { }
     required_nullable { }
 } }
 model! { ResponseFileSearch {
     required { r#type: ResponseFileSearchType, vector_store_ids: Vec<String> }
-    optional { max_num_results: i64, ranking_options: ResponseFileSearchRankingOptions }
+    optional { max_num_results: i64 [min: Some(1), max: Some(50)], ranking_options: ResponseFileSearchRankingOptions }
     nullable { filters: ResponseFileSearchFilters }
     required_nullable { }
 } }
@@ -676,8 +739,8 @@ literals! { ResponseMcpToolApprovalSetting { Always = "always", Never = "never" 
 union! { ResponseMcpRequireApproval { McpToolApprovalFilter(ResponseMcpToolApprovalFilter), McpToolApprovalSetting(ResponseMcpToolApprovalSetting) } }
 model! { ResponseMcp {
     required { server_label: String, r#type: ResponseMcpType }
-    optional { authorization: String, connector_id: ResponseMcpConnectorId, defer_loading: bool, server_description: String, server_url: String [uri: true], tunnel_id: String }
-    nullable { allowed_callers: Vec<ResponseFunctionAllowedCallersEntry>, allowed_tools: ResponseMcpAllowedTools, headers: BTreeMap<String, String>, require_approval: ResponseMcpRequireApproval }
+    optional { authorization: String, connector_id: ResponseMcpConnectorId, defer_loading: bool, server_description: String, server_url: String [uri: true], tunnel_id: String [tunnel_id: true] }
+    nullable { allowed_callers: Vec<ResponseFunctionAllowedCallersEntry> [min_items: Some(1)], allowed_tools: ResponseMcpAllowedTools, headers: BTreeMap<String, String>, require_approval: ResponseMcpRequireApproval }
     required_nullable { }
 } }
 literals! { ResponseCodeInterpreterToolAutoType { Auto = "auto" } }
@@ -697,15 +760,15 @@ model! { ResponseContainerNetworkPolicyDomainSecret {
     required_nullable { }
 } }
 model! { ResponseContainerNetworkPolicyAllowlist {
-    required { allowed_domains: Vec<String>, r#type: ResponseContainerNetworkPolicyAllowlistType }
-    optional { domain_secrets: Vec<ResponseContainerNetworkPolicyDomainSecret> }
+    required { allowed_domains: Vec<String> [min_items: Some(1)], r#type: ResponseContainerNetworkPolicyAllowlistType }
+    optional { domain_secrets: Vec<ResponseContainerNetworkPolicyDomainSecret> [min_items: Some(1)] }
     nullable { }
     required_nullable { }
 } }
 union! { ResponseCodeInterpreterToolAutoNetworkPolicy { ContainerNetworkPolicyDisabled(ResponseContainerNetworkPolicyDisabled), ContainerNetworkPolicyAllowlist(ResponseContainerNetworkPolicyAllowlist) } }
 model! { ResponseCodeInterpreterToolAuto {
     required { r#type: ResponseCodeInterpreterToolAutoType }
-    optional { file_ids: Vec<String>, network_policy: ResponseCodeInterpreterToolAutoNetworkPolicy }
+    optional { file_ids: Vec<String> [max_items: Some(50)], network_policy: ResponseCodeInterpreterToolAutoNetworkPolicy }
     nullable { memory_limit: ResponseCodeInterpreterToolAutoMemoryLimit }
     required_nullable { }
 } }
@@ -714,7 +777,7 @@ literals! { ResponseCodeInterpreterType { CodeInterpreter = "code_interpreter" }
 model! { ResponseCodeInterpreter {
     required { container: ResponseCodeInterpreterContainer, r#type: ResponseCodeInterpreterType }
     optional { }
-    nullable { allowed_callers: Vec<ResponseFunctionAllowedCallersEntry> }
+    nullable { allowed_callers: Vec<ResponseFunctionAllowedCallersEntry> [min_items: Some(1)] }
     required_nullable { }
 } }
 literals! { ResponseProgrammaticToolCallingType { ProgrammaticToolCalling = "programmatic_tool_calling" } }
@@ -777,7 +840,7 @@ model! { ResponseInlineSkill {
 union! { ResponseContainerAutoSkillsEntry { SkillReference(ResponseSkillReference), InlineSkill(ResponseInlineSkill) } }
 model! { ResponseContainerAuto {
     required { r#type: ResponseContainerAutoType }
-    optional { file_ids: Vec<String>, network_policy: ResponseCodeInterpreterToolAutoNetworkPolicy, skills: Vec<ResponseContainerAutoSkillsEntry> }
+    optional { file_ids: Vec<String> [max_items: Some(50)], network_policy: ResponseCodeInterpreterToolAutoNetworkPolicy, skills: Vec<ResponseContainerAutoSkillsEntry> [max_items: Some(200)] }
     nullable { memory_limit: ResponseCodeInterpreterToolAutoMemoryLimit }
     required_nullable { }
 } }
@@ -790,7 +853,7 @@ model! { ResponseLocalSkill {
 } }
 model! { ResponseLocalEnvironment {
     required { r#type: ResponseLocalEnvironmentType }
-    optional { skills: Vec<ResponseLocalSkill> }
+    optional { skills: Vec<ResponseLocalSkill> [max_items: Some(200)] }
     nullable { }
     required_nullable { }
 } }
@@ -805,7 +868,7 @@ union! { ResponseShellEnvironment { ContainerAuto(ResponseContainerAuto), LocalE
 model! { ResponseShell {
     required { r#type: ResponseShellType }
     optional { }
-    nullable { allowed_callers: Vec<ResponseFunctionAllowedCallersEntry>, environment: ResponseShellEnvironment }
+    nullable { allowed_callers: Vec<ResponseFunctionAllowedCallersEntry> [min_items: Some(1)], environment: ResponseShellEnvironment }
     required_nullable { }
 } }
 literals! { ResponseCustomType { Custom = "custom" } }
@@ -828,19 +891,19 @@ union! { ResponseCustomToolInputFormat { Text(ResponseText), Grammar(ResponseGra
 model! { ResponseCustom {
     required { name: String, r#type: ResponseCustomType }
     optional { r#async: bool, defer_loading: bool, description: String, format: ResponseCustomToolInputFormat }
-    nullable { allowed_callers: Vec<ResponseFunctionAllowedCallersEntry> }
+    nullable { allowed_callers: Vec<ResponseFunctionAllowedCallersEntry> [min_items: Some(1)] }
     required_nullable { }
 } }
 model! { ResponseNamespaceFunction {
-    required { name: String [min_len: Some(1), max_len: Some(128)], r#type: ResponseFunctionType }
+    required { name: String [min_len: Some(1), max_len: Some(128), identifier: true], r#type: ResponseFunctionType }
     optional { r#async: bool, defer_loading: bool }
-    nullable { allowed_callers: Vec<ResponseFunctionAllowedCallersEntry>, description: String, output_schema: BTreeMap<String, Value>, parameters: Value, strict: bool }
+    nullable { allowed_callers: Vec<ResponseFunctionAllowedCallersEntry> [min_items: Some(1)], description: String, output_schema: BTreeMap<String, Value>, parameters: BTreeMap<String, Value>, strict: bool }
     required_nullable { }
 } }
 union! { ResponseNamespaceToolsEntry { Function(ResponseNamespaceFunction), Custom(ResponseCustom) } }
 literals! { ResponseNamespaceType { Namespace = "namespace" } }
 model! { ResponseNamespace {
-    required { description: String, name: String [min_len: Some(1)], tools: Vec<ResponseNamespaceToolsEntry>, r#type: ResponseNamespaceType }
+    required { description: String, name: String [min_len: Some(1)], tools: Vec<ResponseNamespaceToolsEntry> [min_items: Some(1)], r#type: ResponseNamespaceType }
     optional { }
     nullable { }
     required_nullable { }
@@ -849,7 +912,7 @@ literals! { ResponseToolSearchType { ToolSearch = "tool_search" } }
 model! { ResponseToolSearch {
     required { r#type: ResponseToolSearchType }
     optional { execution: ResponseToolSearchCallExecution }
-    nullable { description: String, parameters: Value }
+    nullable { description: String, parameters: BTreeMap<String, Value> }
     required_nullable { }
 } }
 literals! { ResponseWebSearchPreviewType { WebSearchPreview = "web_search_preview", WebSearchPreview20250311 = "web_search_preview_2025_03_11" } }
@@ -870,11 +933,12 @@ literals! { ResponseApplyPatchType { ApplyPatch = "apply_patch" } }
 model! { ResponseApplyPatch {
     required { r#type: ResponseApplyPatchType }
     optional { }
-    nullable { allowed_callers: Vec<ResponseFunctionAllowedCallersEntry> }
+    nullable { allowed_callers: Vec<ResponseFunctionAllowedCallersEntry> [min_items: Some(1)] }
     required_nullable { }
 } }
 union! {
     /// Tool descriptions embedded in the shared history/tool-search item schema.
+    ///
     /// This type is not Live's session tool-registration configuration: only
     /// function and web-search registration is supported there.
     ResponseSharedTool { Function(ResponseFunction), FileSearch(ResponseFileSearch), Computer(ResponseComputer), ComputerUsePreview(ResponseComputerUsePreview), WebSearch(ResponseWebSearch), Mcp(ResponseMcp), CodeInterpreter(ResponseCodeInterpreter), ProgrammaticToolCalling(ResponseProgrammaticToolCalling), ImageGeneration(ResponseImageGeneration), LocalShell(ResponseLocalShell), Shell(ResponseShell), Custom(ResponseCustom), Namespace(ResponseNamespace), ToolSearch(ResponseToolSearch), WebSearchPreview(ResponseWebSearchPreview), ApplyPatch(ResponseApplyPatch) }
@@ -1069,9 +1133,9 @@ model! { ResponseApplyPatchCallOutput {
     required_nullable { }
 } }
 model! { ResponseMcpListToolsToolsEntry {
-    required { input_schema: Value, name: String }
+    required { input_schema: BTreeMap<String, Value>, name: String }
     optional { }
-    nullable { annotations: Value, description: String }
+    nullable { annotations: BTreeMap<String, Value>, description: String }
     required_nullable { }
 } }
 literals! { ResponseMcpListToolsType { McpListTools = "mcp_list_tools" } }
@@ -1349,7 +1413,8 @@ pub enum ResponseLifecycleKind {
 pub struct ResponseStreamLogprob {
     pub token: String,
     pub logprob: f64,
-    pub top_logprobs: Vec<ResponseStreamTopLogprob>,
+    #[serde(default, deserialize_with = "nonnull")]
+    pub top_logprobs: Option<Vec<ResponseStreamTopLogprob>>,
 }
 
 redacted_debug!(ResponseStreamLogprob);
@@ -1357,8 +1422,10 @@ redacted_debug!(ResponseStreamLogprob);
 /// A streaming alternative token probability.
 #[derive(Clone, PartialEq, Deserialize)]
 pub struct ResponseStreamTopLogprob {
-    pub token: String,
-    pub logprob: f64,
+    #[serde(default, deserialize_with = "nonnull")]
+    pub token: Option<String>,
+    #[serde(default, deserialize_with = "nonnull")]
+    pub logprob: Option<f64>,
 }
 
 redacted_debug!(ResponseStreamTopLogprob);
@@ -1597,74 +1664,302 @@ impl<'de> Deserialize<'de> for ResponseEvent {
     }
 }
 
-/// Collect completed calls for one delegation, grouped by nested response ID.
+/// A backend response identity and its available outer Live delegation scope.
 ///
-/// Use a separate tracker for each outer `delegation_id`. Feed events in received
-/// order. Completion snapshots never clear collected calls. This helper never
-/// executes operations or sends a continuation, and retains responses until the
-/// application explicitly removes them.
+/// `None` means the envelope omitted or explicitly cleared its delegation ID.
+/// Such a lifecycle fact still has a response ID, but cannot establish ownership
+/// of ID-less granular events. The original frame retains absent versus null.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ResponseKey {
+    pub delegation_id: Option<String>,
+    pub response_id: String,
+}
+
+redacted_debug!(ResponseKey);
+
+/// Attribution evidence, not permission to execute a completed function.
+#[derive(Clone, PartialEq, Eq)]
+pub enum ResponseAttribution {
+    /// Explicit lifecycle identity, a previously bound item, or the sole open
+    /// response within a known delegation.
+    Owned(ResponseKey),
+    /// No safe owner is known. The caller must retain or report this event.
+    Unowned,
+    /// Multiple responses could own the event; no last-active guess is made.
+    Ambiguous(Vec<ResponseKey>),
+}
+
+redacted_debug!(ResponseAttribution);
+
+#[derive(Clone, PartialEq, Eq)]
+struct TrackedOutput {
+    item: ResponseEventItem,
+    done: bool,
+}
+
+#[derive(Clone, Default, PartialEq, Eq)]
+struct TrackedResponse {
+    started: bool,
+    terminal: Option<ResponseLifecycleKind>,
+    uncertain: bool,
+    items: BTreeMap<i64, TrackedOutput>,
+    calls: Vec<FunctionCall>,
+}
+
+impl ResponseEventItem {
+    fn id(&self) -> Option<&str> {
+        match self {
+            Self::FunctionCall(call) => call.id.as_deref(),
+            Self::Other { raw, .. } => raw.get("id").and_then(Value::as_str),
+        }
+    }
+
+    fn call_id(&self) -> Option<&str> {
+        match self {
+            Self::FunctionCall(call) => Some(&call.call_id),
+            Self::Other { .. } => None,
+        }
+    }
+}
+
+impl ResponseEvent {
+    fn item_id(&self) -> Option<&str> {
+        match self {
+            Self::OutputItemAdded { item, .. } | Self::OutputItemDone { item, .. } => item.id(),
+            Self::FunctionCallArgumentsDelta { item_id, .. }
+            | Self::FunctionCallArgumentsDone { item_id, .. }
+            | Self::OutputTextDelta { item_id, .. }
+            | Self::OutputTextDone { item_id, .. } => Some(item_id),
+            _ => None,
+        }
+    }
+
+    fn call_id(&self) -> Option<&str> {
+        match self {
+            Self::OutputItemAdded { item, .. } | Self::OutputItemDone { item, .. } => {
+                item.call_id()
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Track function facts and completion barriers by response and delegation.
+///
+/// Feed the complete stream in received order, including non-function items and
+/// lifecycle events. A finished item does not finish its response or call batch.
+/// [`Self::ready_calls`] requires `response.created`, a matching successful
+/// terminal event, every observed item done, and no unresolved attribution.
+/// Cleared lifecycle output arrays never erase collected calls.
+///
+/// Null/omitted scopes never select an arbitrary active response. An unowned
+/// granular event makes currently open possible owners uncertain; ambiguity is
+/// sticky until those responses are removed. Callers must handle the returned
+/// attribution explicitly and report decode errors or stream loss with
+/// [`Self::mark_uncertain`]. No events are buffered for speculative reassignment.
+///
+/// This helper never executes tools or continues work. State is retained until
+/// [`Self::remove`]; applications must enforce their own retention limits.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct FunctionCallTracker {
-    active_response_id: Option<String>,
-    calls: BTreeMap<String, Vec<FunctionCall>>,
+    responses: BTreeMap<ResponseKey, TrackedResponse>,
 }
 
 redacted_debug!(FunctionCallTracker);
 
 impl FunctionCallTracker {
-    /// Observe a nested event associated with this tracker's delegation.
+    /// Observe a nested event with the envelope's available delegation ID.
     ///
     /// # Errors
     ///
-    /// Rejects an actionable item before `response.created`, or conflicting
-    /// duplicate `call_id` contents. Exact repeated completed items are idempotent.
-    pub fn observe(&mut self, event: &ResponseEvent) -> Result<(), String> {
-        if let ResponseEvent::Lifecycle {
-            kind: ResponseLifecycleKind::Created,
-            response,
-            ..
-        } = event
-        {
-            self.calls.entry(response.id.clone()).or_default();
-            self.active_response_id = Some(response.id.clone());
+    /// Rejects conflicting items/terminals or new items after a terminal event.
+    /// Exact duplicate completed items are idempotent. Errors make the affected
+    /// response uncertain; already collected facts remain available.
+    pub fn observe(
+        &mut self,
+        delegation_id: Option<&str>,
+        event: &ResponseEvent,
+    ) -> Result<ResponseAttribution, String> {
+        if let ResponseEvent::Lifecycle { kind, response, .. } = event {
+            let key = ResponseKey {
+                delegation_id: delegation_id.map(str::to_owned),
+                response_id: response.id.clone(),
+            };
+            let state = self.responses.entry(key.clone()).or_default();
+            let terminal = matches!(
+                kind,
+                ResponseLifecycleKind::Completed
+                    | ResponseLifecycleKind::Failed
+                    | ResponseLifecycleKind::Incomplete
+            );
+            if state.terminal.is_some_and(|previous| previous != *kind) {
+                state.uncertain = true;
+                return Err("conflicting lifecycle event after a response terminal".into());
+            }
+            if *kind == ResponseLifecycleKind::Created {
+                state.started = true;
+            }
+            if terminal {
+                state.terminal = Some(*kind);
+            }
+            return Ok(ResponseAttribution::Owned(key));
         }
-        if let Some(call) = event.completed_function_call() {
-            let id = self
-                .active_response_id
-                .as_ref()
-                .ok_or("completed function item arrived before response.created")?;
-            let calls = self.calls.entry(id.clone()).or_default();
-            if let Some(previous) = calls
+        if matches!(event, ResponseEvent::Unknown { .. }) {
+            return Ok(ResponseAttribution::Unowned);
+        }
+        let owners = self.possible_owners(delegation_id, event);
+        let [key] = owners.as_slice() else {
+            if owners.is_empty() {
+                self.mark_uncertain(delegation_id);
+                return Ok(ResponseAttribution::Unowned);
+            }
+            for key in &owners {
+                self.responses
+                    .get_mut(key)
+                    .ok_or("missing tracked owner")?
+                    .uncertain = true;
+            }
+            return Ok(ResponseAttribution::Ambiguous(owners));
+        };
+        let state = self.responses.get_mut(key).ok_or("missing tracked owner")?;
+        if let Err(error) = Self::observe_item(state, event) {
+            state.uncertain = true;
+            return Err(error);
+        }
+        Ok(ResponseAttribution::Owned(key.clone()))
+    }
+
+    fn possible_owners(
+        &self,
+        delegation_id: Option<&str>,
+        event: &ResponseEvent,
+    ) -> Vec<ResponseKey> {
+        let Some(scope) = delegation_id else {
+            return Vec::new();
+        };
+        let scoped = || {
+            self.responses
                 .iter()
-                .find(|previous| previous.call_id == call.call_id)
-            {
-                if previous != call {
-                    return Err("conflicting completed function items for the same call_id".into());
-                }
-            } else {
-                calls.push(call.clone());
+                .filter(|(key, _)| key.delegation_id.as_deref() == Some(scope))
+        };
+        let bound: Vec<_> = scoped()
+            .filter(|(_, state)| {
+                state.items.values().any(|output| {
+                    event
+                        .item_id()
+                        .is_some_and(|id| output.item.id() == Some(id))
+                        || event
+                            .call_id()
+                            .is_some_and(|id| output.item.call_id() == Some(id))
+                })
+            })
+            .map(|(key, _)| key.clone())
+            .collect();
+        if !bound.is_empty() {
+            return bound;
+        }
+        scoped()
+            .filter(|(_, state)| state.terminal.is_none())
+            .map(|(key, _)| key.clone())
+            .collect()
+    }
+
+    fn observe_item(state: &mut TrackedResponse, event: &ResponseEvent) -> Result<(), String> {
+        let (index, item, done) = match event {
+            ResponseEvent::OutputItemAdded {
+                output_index, item, ..
+            } => (*output_index, item, false),
+            ResponseEvent::OutputItemDone {
+                output_index, item, ..
+            } => (*output_index, item, true),
+            _ => return Ok(()),
+        };
+        if let Some(previous) = state.items.get(&index) {
+            if previous.done {
+                return if done && &previous.item == item {
+                    Ok(())
+                } else {
+                    Err("conflicting output item after output_item.done".into())
+                };
+            }
+            if previous.item.id() != item.id() || previous.item.call_id() != item.call_id() {
+                return Err("conflicting output identities at the same output_index".into());
             }
         }
+        if state.terminal.is_some() {
+            return Err("new output item after a response terminal".into());
+        }
+        if state.items.iter().any(|(other_index, output)| {
+            *other_index != index
+                && (item.id().is_some_and(|id| output.item.id() == Some(id))
+                    || item
+                        .call_id()
+                        .is_some_and(|id| output.item.call_id() == Some(id)))
+        }) {
+            return Err("duplicate output identity at different output indices".into());
+        }
+        if let Some(call) = event.completed_function_call() {
+            state.calls.push(call.clone());
+        }
+        state.items.insert(
+            index,
+            TrackedOutput {
+                item: item.clone(),
+                done,
+            },
+        );
         Ok(())
     }
 
-    /// The response selected by the most recent `response.created`.
-    #[must_use]
-    pub fn active_response_id(&self) -> Option<&str> {
-        self.active_response_id.as_deref()
-    }
-
-    /// Completed function items collected for a particular response.
-    #[must_use]
-    pub fn calls(&self, response_id: &str) -> Option<&[FunctionCall]> {
-        self.calls.get(response_id).map(Vec::as_slice)
-    }
-
-    /// Explicitly release a response after the application finishes tracking it.
-    pub fn remove(&mut self, response_id: &str) -> Option<Vec<FunctionCall>> {
-        if self.active_response_id.as_deref() == Some(response_id) {
-            self.active_response_id = None;
+    /// Mark open possible owners incomplete after a lost or malformed event.
+    /// `None` conservatively marks all open responses, not one guessed scope.
+    pub fn mark_uncertain(&mut self, delegation_id: Option<&str>) {
+        for (key, state) in &mut self.responses {
+            if state.terminal.is_none()
+                && delegation_id.is_none_or(|scope| key.delegation_id.as_deref() == Some(scope))
+            {
+                state.uncertain = true;
+            }
         }
-        self.calls.remove(response_id)
+    }
+
+    /// Collected completed items, which may still be an unfinished call batch.
+    #[must_use]
+    pub fn calls(&self, key: &ResponseKey) -> Option<&[FunctionCall]> {
+        self.responses.get(key).map(|state| state.calls.as_slice())
+    }
+
+    /// A complete call set after this exact scoped response successfully ended.
+    ///
+    /// `Some(&[])` means a confirmed empty set. `None` means unknown, unfinished,
+    /// failed/incomplete, unattributed, or otherwise uncertain, never empty.
+    #[must_use]
+    pub fn ready_calls(&self, key: &ResponseKey) -> Option<&[FunctionCall]> {
+        let state = self.responses.get(key)?;
+        (key.delegation_id.is_some()
+            && state.started
+            && !state.uncertain
+            && state.terminal == Some(ResponseLifecycleKind::Completed)
+            && state.items.values().all(|output| {
+                output.done
+                    && match &output.item {
+                        ResponseEventItem::FunctionCall(call) => {
+                            matches!(call.status, None | Some(ResponseMessageStatus::Completed))
+                        }
+                        ResponseEventItem::Other { .. } => true,
+                    }
+            }))
+        .then_some(state.calls.as_slice())
+    }
+
+    /// The observed terminal kind for this exact response, independent of calls.
+    #[must_use]
+    pub fn terminal(&self, key: &ResponseKey) -> Option<ResponseLifecycleKind> {
+        self.responses.get(key).and_then(|state| state.terminal)
+    }
+
+    /// Release facts only once late duplicates no longer need attribution.
+    pub fn remove(&mut self, key: &ResponseKey) -> Option<Vec<FunctionCall>> {
+        self.responses.remove(key).map(|state| state.calls)
     }
 }

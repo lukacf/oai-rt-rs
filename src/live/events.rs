@@ -414,9 +414,14 @@ impl ServerFrame {
     /// Rejects malformed known nested events instead of exposing actionable calls.
     pub fn response_event(&self) -> super::Result<Option<super::ResponseEvent>> {
         match &self.event {
-            ServerEvent::Response { event, .. } => super::ResponseEvent::decode(Value::Object(event.clone()))
-                .map(Some)
-                .map_err(|source| super::Error::MalformedEvent {raw:self.raw.clone(),source}),
+            ServerEvent::Response { event, .. } => {
+                super::ResponseEvent::decode(Value::Object(event.clone()))
+                    .map(Some)
+                    .map_err(|source| super::Error::MalformedEvent {
+                        raw: self.raw.clone(),
+                        source,
+                    })
+            }
             _ => Ok(None),
         }
     }

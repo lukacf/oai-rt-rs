@@ -1,11 +1,6 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use futures::{SinkExt, StreamExt, stream::SplitSink};
-use std::{
-    collections::{HashMap, VecDeque},
-    future::Future,
-    pin::Pin,
-    time::Duration,
-};
+use std::{collections::VecDeque, future::Future, pin::Pin, time::Duration};
 use tokio::{
     net::TcpStream,
     sync::{mpsc, oneshot, watch},
@@ -301,7 +296,7 @@ impl LiveClient {
             format,
             phase: phase_tx.clone(),
             started_sent,
-            delegations: HashMap::new(),
+            delegation_target: None,
         };
         let driver = tokio::spawn(run_driver(
             socket,
@@ -513,7 +508,7 @@ struct DriverState {
     format: AudioFormat,
     phase: watch::Sender<SessionPhase>,
     started_sent: bool,
-    delegations: HashMap<String, DelegationTarget>,
+    delegation_target: Option<DelegationTarget>,
 }
 
 impl DriverState {
@@ -577,9 +572,14 @@ impl DriverState {
             Command::InstructionsAppend { delegation_id, .. }
             | Command::ThinkingAppend { delegation_id, .. }
             | Command::CommentaryAppend { delegation_id, .. }
-                if delegation_id.0.as_ref().is_some_and(|id| {
-                    self.delegations.get(id) == Some(&DelegationTarget::Responses)
-                }) =>
+                if delegation_id.0.is_some()
+                    && (self.delegation_target == Some(DelegationTarget::Responses)
+                        || self.config.as_ref().is_some_and(|config| {
+                            matches!(
+                                config.delegation,
+                                Field::Value(DelegationConfig::Responses { .. })
+                            )
+                        })) =>
             {
                 return Err(Error::Invalid(
                     "context requires a client delegation, not a Responses delegation".into(),
@@ -622,8 +622,8 @@ impl DriverState {
                 self.phase.send_replace(SessionPhase::Closed);
             }
             ServerEvent::DelegationCreated { delegation, .. } => {
-                self.delegations
-                    .insert(delegation.id.clone(), delegation.target);
+                // Delegation mode is immutable; no per-ID history is needed.
+                self.delegation_target.get_or_insert(delegation.target);
             }
             _ => {}
         }
@@ -649,6 +649,7 @@ fn upgrade_body_issue(
     let length = lengths
         .next()
         .and_then(|value| value.to_str().ok())
+        .filter(|value| !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()))
         .and_then(|value| value.parse::<usize>().ok());
     if lengths.next().is_none() && length == Some(buffered) {
         None
@@ -800,5 +801,50 @@ async fn run_driver(
     // Releasing the socket is bounded even if the peer does not finish its close handshake.
     if let Some(mut writer) = writer {
         let _ = timeout(Duration::from_secs(1), writer.close()).await;
+    }
+}
+
+#[cfg(test)]
+mod framing_tests {
+    use super::*;
+    use reqwest::header::{CONTENT_LENGTH, HeaderMap, HeaderValue, TRANSFER_ENCODING};
+
+    #[test]
+    fn error_body_completeness_requires_unambiguous_ascii_content_length() {
+        for (lengths, buffered, expected) in [
+            (vec!["0"], 0, None),
+            (vec!["7"], 7, None),
+            (vec!["007"], 7, None),
+            (vec!["+0"], 0, Some(HttpBodyIssue::Unconfirmed)),
+            (vec!["+7"], 7, Some(HttpBodyIssue::Unconfirmed)),
+            (vec![""], 0, Some(HttpBodyIssue::Unconfirmed)),
+            (vec!["-0"], 0, Some(HttpBodyIssue::Unconfirmed)),
+            (vec!["7 "], 7, Some(HttpBodyIssue::Unconfirmed)),
+            (vec!["0x7"], 7, Some(HttpBodyIssue::Unconfirmed)),
+            (
+                vec!["184467440737095516160"],
+                0,
+                Some(HttpBodyIssue::Unconfirmed),
+            ),
+            (vec!["0", "0"], 0, Some(HttpBodyIssue::Unconfirmed)),
+            (vec!["0, 0"], 0, Some(HttpBodyIssue::Unconfirmed)),
+            (vec!["7"], 0, Some(HttpBodyIssue::Unconfirmed)),
+            (vec![], 0, Some(HttpBodyIssue::Unconfirmed)),
+        ] {
+            let mut headers = HeaderMap::new();
+            for length in lengths {
+                headers.append(CONTENT_LENGTH, HeaderValue::from_str(length).unwrap());
+            }
+            assert_eq!(upgrade_body_issue(&headers, buffered, 10), expected);
+            headers.insert(TRANSFER_ENCODING, HeaderValue::from_static("chunked"));
+            assert_eq!(
+                upgrade_body_issue(&headers, buffered, 10),
+                Some(HttpBodyIssue::Unconfirmed)
+            );
+        }
+        assert_eq!(
+            upgrade_body_issue(&HeaderMap::new(), 11, 10),
+            Some(HttpBodyIssue::Truncated)
+        );
     }
 }

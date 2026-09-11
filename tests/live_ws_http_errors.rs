@@ -24,7 +24,7 @@ async fn split_upgrade_headers_do_not_claim_a_complete_error_body() {
     let server = tokio::spawn(async move {
         let (mut socket, _) = listener.accept().await.unwrap();
         let mut request = [0; 4096];
-        socket.read(&mut request).await.unwrap();
+        assert!(socket.read(&mut request).await.unwrap() > 0);
         socket.write_all(b"HTTP/1.1 429 Too Many Requests\r\nContent-Length: 7\r\nRetry-After: 4\r\nX-Request-Id: req-upgrade\r\n\r\n").await.unwrap();
         continue_rx.await.unwrap();
         let _ = socket.write_all(b"payload").await;
@@ -79,7 +79,7 @@ async fn unknown_and_chunked_upgrade_framing_remain_unconfirmed() {
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
             let mut request = [0; 4096];
-            socket.read(&mut request).await.unwrap();
+            assert!(socket.read(&mut request).await.unwrap() > 0);
             socket.write_all(format!("HTTP/1.1 403 Forbidden\r\n{framing}Connection: close\r\n\r\n7\r\npayload\r\n0\r\n\r\n").as_bytes()).await.unwrap();
         });
         let error = client

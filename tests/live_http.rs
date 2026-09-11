@@ -445,7 +445,7 @@ async fn interrupted_error_body_preserves_status_headers_and_available_prefix() 
     let server = tokio::spawn(async move {
         let (mut socket, _) = listener.accept().await.unwrap();
         let mut request = [0; 4096];
-        socket.read(&mut request).await.unwrap();
+        assert!(socket.read(&mut request).await.unwrap() > 0);
         socket.write_all(b"HTTP/1.1 429 Too Many Requests\r\nContent-Length: 20\r\nContent-Type: text/plain\r\nRetry-After: 7\r\nX-Request-Id: req-stream\r\nConnection: close\r\n\r\npartial").await.unwrap();
         socket.shutdown().await.unwrap();
     });

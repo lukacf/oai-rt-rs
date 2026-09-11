@@ -5,25 +5,27 @@
 //! delegated backend, not the voice model. Transcript intervals are observations,
 //! not turn identifiers or playback acknowledgments.
 
-mod models;
+#![doc = include_str!("../../docs/live.md")]
+
+mod audio;
+mod client;
+mod codec;
 mod error;
 mod events;
-mod codec;
-mod client;
-mod ws;
-mod audio;
-mod rest;
 mod fork;
-mod sip;
-pub use sip::*;
-pub use fork::*;
+mod models;
 mod responses;
-pub use responses::*;
-pub use rest::*;
+mod rest;
+mod sip;
+mod ws;
 pub use audio::*;
-pub use ws::*;
 pub use client::{ClientOptions, LiveClient};
 pub use codec::*;
 pub use error::{Error, HttpBodyIssue, Result};
 pub use events::*;
+pub use fork::*;
 pub use models::*;
+pub use responses::*;
+pub use rest::*;
+pub use sip::*;
+pub use ws::*;

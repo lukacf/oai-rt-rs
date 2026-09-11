@@ -104,6 +104,42 @@ async fn closed(ws: &mut Peer) {
 }
 
 #[tokio::test]
+async fn many_delegations_with_capacity_one_do_not_require_retained_id_history() {
+    let (client, peer) = server(|mut ws| async move {
+        started(&mut ws).await;
+        for i in 0..512 {
+            send(&mut ws, json!({"type":"session.delegation.created","event_id":format!("e{i}"),"offset_ms":0.0,
+                "delegation":{"type":"delegation","id":format!("d{i}{}", "x".repeat(1024)),"target":"client"}})).await;
+            assert_eq!(recv(&mut ws).await["type"], "session.input_audio.mute");
+        }
+        assert_eq!(recv(&mut ws).await["delegation_id"], "not-replayed");
+        assert_eq!(recv(&mut ws).await["type"], "session.close");
+        closed(&mut ws).await;
+    }).await;
+    let mut connection = client.connect(SessionConfig::default()).await.unwrap();
+    connection.next_event().await.unwrap().unwrap();
+    for _ in 0..512 {
+        assert!(matches!(
+            connection.next_event().await.unwrap().unwrap().event,
+            ServerEvent::DelegationCreated { .. }
+        ));
+        connection
+            .send(ClientEvent::new(Command::InputAudioMute))
+            .await
+            .unwrap();
+    }
+    connection
+        .send(ClientEvent::new(Command::ThinkingAppend {
+            content: "synthetic".into(),
+            delegation_id: Nullable(Some("not-replayed".into())),
+        }))
+        .await
+        .unwrap();
+    connection.close(WAIT, |_| Ok(())).await.unwrap();
+    peer.await.unwrap();
+}
+
+#[tokio::test]
 async fn startup_gates_commands_and_graceful_close_preserves_every_event() {
     let (client, peer) = server(|mut ws| async move {
         started(&mut ws).await;

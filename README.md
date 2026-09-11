@@ -26,6 +26,22 @@ delegated backend work. It does not route through Realtime or the private adapte
 - Feature-gated mechanical support for the private, pre-release GPT Live protocol.
 - Public GPT-Live types, strict codecs, bounded full-duplex WebSockets, and explicit final usage.
 
+## Public GPT-Live
+
+```toml
+[dependencies]
+oai-rt-rs = "0.5.0"
+```
+
+Use `oai_rt_rs::live::LiveClient` for public `gpt-live-1` primary WebSockets,
+WebRTC signaling, sideband control, stored recordings, forks and SIP controls.
+No feature flag is needed. Continuous voice, client delegation, and managed
+Responses are separate from the Realtime examples below.
+
+The [public Live guide](docs/live.md) covers configuration, strict wire types,
+scoped function-call completion, explicit final usage, examples, and the
+documented provider/testing limitations.
+
 ## Experimental GPT Live protocol
 
 This section describes the **private adapter only**, not the public GPT-Live API.

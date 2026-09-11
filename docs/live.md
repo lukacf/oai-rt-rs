@@ -1,7 +1,7 @@
 # Public GPT-Live
 
-`oai_rt_rs::live` is the public OpenAI Live API. It is not the Realtime API,
-and it does not use `experimental::gpt_live`, ChatGPT OAuth, private bootstrap
+`oai_rt_rs::live` is the public [OpenAI Live API](https://developers.openai.com/api/reference/resources/live). It is not the Realtime API,
+and it does not use `experimental::gpt_live`, [ChatGPT](https://chatgpt.com) OAuth, private bootstrap
 endpoints, or Alpha/Beta headers. The experimental adapter remains isolated
 behind its existing feature.
 
@@ -42,7 +42,7 @@ query parameter**. The first command is `session.start`; its `session.model`
 defaults to `gpt-live-1`. The session object has **no `type: "live"` field**.
 `LiveClient::connect` sends this first command and waits for `session.started`.
 
-Use `ClientOptions` for standard OpenAI organization/project headers and explicit
+Use `ClientOptions` for standard organization/project headers and explicit
 timeouts, event-size limits, and queue bounds. API keys stay on trusted servers.
 Redirects are disabled. The client never retries a request automatically.
 
@@ -100,7 +100,7 @@ IDs remain opaque and are encoded as one path segment.
 
 Call controls use `accept_call`, `reject_call`, `refer_call`, and `hangup`.
 SIP acceptance deliberately uses `AcceptRequest`/`SipAcceptSession`, whose
-required `type: "live"` is confirmed by the full OpenAPI; this field is **not**
+required `type: "live"` is confirmed by the full `OpenAPI`; this field is **not**
 valid on primary/RTC startup. SIP negotiates audio and has no frontend data
 channel permissions. Rejection status is an integer from 300 through 699.
 Refer takes a nonblank destination string; hangup has no request body. All four
@@ -180,6 +180,12 @@ and a bounded body prefix. `HttpBodyIssue` distinguishes truncation from failed
 body reads, without losing known HTTP metadata. Request/event/error Debug output
 redacts content and credentials; raw bodies require explicit access.
 
+Failed WebSocket upgrades expose only the bytes buffered with the handshake.
+They remain `Unconfirmed` unless a single ASCII-digits `Content-Length` exactly
+matches that buffer and there is no `Transfer-Encoding`. No second request is
+made to guess the body. Delegation validation retains only the immutable mode,
+not an unbounded history of delegation IDs; the provider validates unknown IDs.
+
 `session.closed` reasons are `close_requested`, `expired`, `content`,
 `remote_hangup`, and `connection_lost`. **The snapshot still says `status: "active"`**:
 the event, not that snapshot field, is terminal.
@@ -208,7 +214,7 @@ structural constraints, **not a guessed token count**. Provider tokenizer errors
 remain visible. It also checks documented numeric bounds and UTF-8 character
 counts for correlation IDs/selectors/custom voice IDs.
 
-The full OpenAPI requires **integer** backend token limits; the rendered
+The full `OpenAPI` requires **integer** backend token limits; the rendered
 reference flattens this distinction to “number.” `max_output_tokens` therefore
 uses `u64`, while session-relative time and usage retain fractional values.
 Provider errors have been observed with `param: null`; the lifecycle guide also
@@ -254,12 +260,39 @@ representations, not permission to register otherwise unsupported Live tools.
 `ServerFrame::response_event` decodes nested lifecycle, item, function-argument,
 and text events. Other nested events retain their raw maps.
 
+Shared outbound types enforce recursive filters and object-only schemas without
+accepting arbitrary JSON as a fallback. File-search result counts are 1-50;
+ranking thresholds and result scores are 0-1. Image compression is 0-100 and
+partial-image counts 0-3. The full reachable input graph was checked for numeric,
+list, record, string, and identifier bounds. No extra range is invented for
+hybrid-search weights or fields with no documented bound. Function-result text
+has a 10,485,760-character limit; a content array instead applies each part's
+own constraints. Nested arbitrary values remain supported inside object schemas.
+
 Listen inside the `response.event` wrapper, preserving its outer delegation ID.
 Only completed `response.output_item.done` function items are actionable; partial
 argument deltas are not. Track complete `call_id`, `name`, and `arguments`.
 Forwarded lifecycle snapshots deliberately clear `output` and `tools`, set
 `instructions` to null, and omit input. Consequently,
 **`response.completed.output: []` does not mean there were no function calls**.
+
+`FunctionCallTracker::observe(outer_delegation_id, &event)` returns
+`ResponseAttribution::Owned(ResponseKey)`, `Unowned`, or `Ambiguous`. Feed the
+complete ordered stream, including item-added/item-done and lifecycle events.
+The key includes both the nested response ID and available outer delegation.
+Previously bound item IDs survive overlapping responses and late duplicates.
+An unbound item can use a known scope's sole open response, never an arbitrary
+last-active response. Null/omitted scopes are unowned, not a shared catch-all
+stream. Unknown and ambiguous facts must be handled explicitly by the caller.
+
+`calls(&key)` exposes finished **items**, possibly an incomplete batch.
+`ready_calls(&key)` requires that exact response's creation and successful
+completion, all observed items finished, and no uncertainty. `Some(&[])` is a
+confirmed empty set; `None` is not. Failed/incomplete responses, missing start,
+unresolved ownership and stream loss never become ready. Call `mark_uncertain`
+after a dropped/malformed event. Retain errors and explicit unfinished state;
+remove tracked responses only when late events no longer need their bindings.
+The helper neither executes functions nor sends continuations.
 
 Submit all pending function results with `response.item.create`, then explicitly
 send `response.create`. Item creation has no standalone success ACK and does not
@@ -338,9 +371,18 @@ the implementation accepts the documented broader event surface.
 
 Deterministic suites are `live_models`, `live_codec`, `live_calls`, `live_fork`,
 `live_http`, `live_responses`, `live_ws`, `live_ws_options`, and
-`live_ws_adversarial`. They cover wire forms, null/absent distinctions, unknown
+`live_ws_adversarial`, plus `live_ws_http_errors`. They cover wire forms, null/absent distinctions, unknown
 fields, bounds, HTTP failures, complete function items, ordering, backpressure,
 cancellation, malformed-event draining, final usage and credential redaction.
+
+| Public contract | Implementation | Deterministic coverage / native probe |
+| --- | --- | --- |
+| Primary, configuration, context, continuous audio, usage/close | `models`, `events`, `codec`, `ws` | `live_models`, `live_codec`, `live_ws*`; `live_smoke`, `live_formats_smoke` |
+| Client delegation | `events`, `ws` | `live_ws`; `live_client_delegation_smoke` |
+| Managed Responses, all shared input alternatives/tools, scoped calls | `responses`, `events` | `live_responses`; `live_responses_smoke` |
+| WebRTC, sideband and frontend permissions | `rest`, `models`, `ws` | `live_http`, `live_ws_options`; real-peer `live_webrtc_smoke` |
+| Stored content and both fork transports | `rest`, `fork`, `ws` | `live_http`, `live_fork`; `live_storage_smoke`, real-peer `--fork` |
+| SIP controls and incoming webhook bodies | `sip`, `rest`, `codec` | `live_calls`, `live_http`, `live_codec`; carrier live qualification unavailable |
 
 ```bash
 cargo test --all-features --all-targets
@@ -365,6 +407,15 @@ python scripts/live_webrtc_smoke.py --binary target/debug/examples/live_webrtc_s
 python scripts/live_webrtc_smoke.py --binary target/debug/examples/live_webrtc_smoke --restrict-browser
 python scripts/live_webrtc_smoke.py --binary target/debug/examples/live_webrtc_smoke --fork
 ```
+
+The managed example's standard workflow uses typed text parts, serial tools,
+20 ms audio, and an acknowledged sparse update before work. It collects all
+function items until the matching response completes before submitting results.
+`--update-during-handoff` preserves the separate intermittent-failure diagnostic
+(forced initial tool, parallel tools, a tool-choice update between result and
+continuation); `--100ms-audio` preserves its alternate pacing. Neither option is
+a retry or a hidden workaround. Reports distinguish continuation sent, response
+created, and terminal status, including partial admission after an error.
 
 The peer harness requires `aiortc` and `av`; Rust performs signaling and sideband
 control, while the Python peer verifies real media, meaningful voiced energy,

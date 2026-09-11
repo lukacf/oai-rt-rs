@@ -130,7 +130,7 @@ fn memberships(name: &str, value: &Value) {
         ResponseFileSearchFilters => [ResponseComparisonFilter, ResponseCompoundFilter] [];
         ResponseComparisonFilterValue => [String, f64, bool] [ResponseFilterScalar];
         ResponseFilterScalar => [String, f64] [];
-        ResponseCompoundFilterFiltersEntry => [ResponseComparisonFilter, Value] [];
+        ResponseCompoundFilterFiltersEntry => [ResponseComparisonFilter, ResponseCompoundFilter] [];
         ResponseMcpAllowedTools => [ResponseMcpToolFilter] [String];
         ResponseMcpRequireApproval => [ResponseMcpToolApprovalFilter, ResponseMcpToolApprovalSetting] [];
         ResponseCodeInterpreterContainer => [String, ResponseCodeInterpreterToolAuto] [];
@@ -424,12 +424,12 @@ fn shared_message_and_call_object_shapes() {
     );
     shape::<ResponseOutputRefusal>(r#"{"refusal":"fixture","type":"refusal"}"#, &[], &[]);
     shape::<ResponseFileSearchCall>(
-        r#"{"id":"fixture","queries":["fixture"],"status":"in_progress","type":"file_search_call","results":[{"attributes":{"key":"fixture"},"file_id":"fixture","filename":"fixture","score":1.25,"text":"fixture"}]}"#,
+        r#"{"id":"fixture","queries":["fixture"],"status":"in_progress","type":"file_search_call","results":[{"attributes":{"key":"fixture"},"file_id":"fixture","filename":"fixture","score":0.25,"text":"fixture"}]}"#,
         &["results"],
         &["results"],
     );
     shape::<ResponseFileSearchCallResultsEntry>(
-        r#"{"attributes":{"key":"fixture"},"file_id":"fixture","filename":"fixture","score":1.25,"text":"fixture"}"#,
+        r#"{"attributes":{"key":"fixture"},"file_id":"fixture","filename":"fixture","score":0.25,"text":"fixture"}"#,
         &["attributes", "file_id", "filename", "score", "text"],
         &["attributes"],
     );
@@ -556,7 +556,7 @@ fn shared_tool_description_object_shapes() {
     shape::<ResponseToolSearchCall>(
         r#"{"arguments":{"arbitrary":["fixture",null,1]},"type":"tool_search_call","id":"fixture","call_id":"fixture","execution":"server","status":"in_progress"}"#,
         &["id", "call_id", "execution", "status"],
-        &["arguments", "id", "call_id", "status"],
+        &["id", "call_id", "status"],
     );
     shape::<ResponseToolSearchOutput>(
         r#"{"tools":[{"name":"fixture","parameters":{"key":{"arbitrary":["fixture",null,1]}},"strict":true,"type":"function","allowed_callers":["direct"],"async":true,"defer_loading":true,"description":"fixture","output_schema":{"key":{"arbitrary":["fixture",null,1]}}}],"type":"tool_search_output","id":"fixture","call_id":"fixture","execution":"server","status":"in_progress"}"#,
@@ -581,7 +581,7 @@ fn shared_tool_description_object_shapes() {
         ],
     );
     shape::<ResponseFileSearch>(
-        r#"{"type":"file_search","vector_store_ids":["fixture"],"filters":{"key":"fixture","type":"eq","value":"fixture"},"max_num_results":1,"ranking_options":{"hybrid_search":{"embedding_weight":1.25,"text_weight":1.25},"ranker":"auto","score_threshold":1.25}}"#,
+        r#"{"type":"file_search","vector_store_ids":["fixture"],"filters":{"key":"fixture","type":"eq","value":"fixture"},"max_num_results":1,"ranking_options":{"hybrid_search":{"embedding_weight":1.25,"text_weight":1.25},"ranker":"auto","score_threshold":0.25}}"#,
         &["filters", "max_num_results", "ranking_options"],
         &["filters"],
     );
@@ -596,7 +596,7 @@ fn shared_tool_description_object_shapes() {
         &[],
     );
     shape::<ResponseFileSearchRankingOptions>(
-        r#"{"hybrid_search":{"embedding_weight":1.25,"text_weight":1.25},"ranker":"auto","score_threshold":1.25}"#,
+        r#"{"hybrid_search":{"embedding_weight":1.25,"text_weight":1.25},"ranker":"auto","score_threshold":0.25}"#,
         &["hybrid_search", "ranker", "score_threshold"],
         &[],
     );
@@ -632,7 +632,7 @@ fn shared_tool_description_object_shapes() {
         &["city", "country", "region", "timezone"],
     );
     shape::<ResponseMcp>(
-        r#"{"server_label":"fixture","type":"mcp","allowed_callers":["direct"],"allowed_tools":["fixture"],"authorization":"fixture","connector_id":"connector_dropbox","defer_loading":true,"headers":{"key":"fixture"},"require_approval":{"always":{"read_only":true,"tool_names":["fixture"]},"never":{"read_only":true,"tool_names":["fixture"]}},"server_description":"fixture","server_url":"https://example.test/","tunnel_id":"fixture"}"#,
+        r#"{"server_label":"fixture","type":"mcp","allowed_callers":["direct"],"allowed_tools":["fixture"],"authorization":"fixture","connector_id":"connector_dropbox","defer_loading":true,"headers":{"key":"fixture"},"require_approval":{"always":{"read_only":true,"tool_names":["fixture"]},"never":{"read_only":true,"tool_names":["fixture"]}},"server_description":"fixture","server_url":"https://example.test/","tunnel_id":"tunnel_abcdefghijklmnopqrstuvwxyz012345"}"#,
         &[
             "allowed_callers",
             "allowed_tools",
@@ -940,7 +940,7 @@ fn remaining_shared_item_object_shapes() {
     shape::<ResponseMcpListToolsToolsEntry>(
         r#"{"input_schema":{"arbitrary":["fixture",null,1]},"name":"fixture","annotations":{"arbitrary":["fixture",null,1]},"description":"fixture"}"#,
         &["annotations", "description"],
-        &["input_schema", "annotations", "description"],
+        &["annotations", "description"],
     );
     shape::<ResponseMcpApprovalRequest>(
         r#"{"id":"fixture","arguments":"fixture","name":"fixture","server_label":"fixture","type":"mcp_approval_request"}"#,
@@ -1301,41 +1301,72 @@ fn future_events_and_items_retain_raw_maps_without_becoming_calls() {
 fn per_response_calls_survive_empty_terminal_output_and_multiple_calls() {
     let mut tracker = FunctionCallTracker::default();
     let first = ResponseEvent::decode(finished_call("call_1")).unwrap();
-    assert!(tracker.observe(&first).is_err());
+    assert_eq!(
+        tracker.observe(Some("d"), &first).unwrap(),
+        ResponseAttribution::Unowned
+    );
+    let r1 = track_lifecycle(&mut tracker, Some("d"), "response.created", "r1");
+    assert!(tracker.ready_calls(&r1).is_none());
+    tracker.observe(Some("d"), &first).unwrap();
+    let mut second = finished_call("call_2");
+    second["output_index"] = json!(1);
+    second["item"]["id"] = json!("item_2");
     tracker
-        .observe(&ResponseEvent::decode(lifecycle("response.created", "r1")).unwrap())
+        .observe(Some("d"), &ResponseEvent::decode(second).unwrap())
         .unwrap();
-    tracker.observe(&first).unwrap();
-    tracker
-        .observe(&ResponseEvent::decode(finished_call("call_2")).unwrap())
-        .unwrap();
-    tracker.observe(&first).unwrap();
+    tracker.observe(Some("d"), &first).unwrap();
+    assert!(
+        tracker.ready_calls(&r1).is_none(),
+        "finished items are not a completion barrier"
+    );
     for kind in ["response.in_progress", "response.completed"] {
-        let event = ResponseEvent::decode(lifecycle(kind, "r1")).unwrap();
-        tracker.observe(&event).unwrap();
-        assert_eq!(tracker.calls("r1").unwrap().len(), 2);
+        track_lifecycle(&mut tracker, Some("d"), kind, "r1");
+        assert_eq!(tracker.calls(&r1).unwrap().len(), 2);
     }
+    assert_eq!(tracker.ready_calls(&r1).unwrap().len(), 2);
+    let r2 = track_lifecycle(&mut tracker, Some("d"), "response.created", "r2");
+    let mut third = finished_call("call_3");
+    third["item"]["id"] = json!("item_3");
     tracker
-        .observe(&ResponseEvent::decode(lifecycle("response.created", "r2")).unwrap())
+        .observe(Some("d"), &ResponseEvent::decode(third.clone()).unwrap())
         .unwrap();
-    tracker
-        .observe(&ResponseEvent::decode(finished_call("call_3")).unwrap())
-        .unwrap();
-    assert_eq!(tracker.active_response_id(), Some("r2"));
-    assert_eq!(tracker.calls("r1").unwrap().len(), 2);
-    assert_eq!(tracker.calls("r2").unwrap()[0].call_id, "call_3");
-    let mut conflicting = finished_call("call_3");
+    assert_eq!(tracker.calls(&r1).unwrap().len(), 2);
+    assert_eq!(tracker.calls(&r2).unwrap()[0].call_id, "call_3");
+    // A late duplicate stays bound to r1, never the latest response r2.
+    assert_eq!(
+        tracker.observe(Some("d"), &first).unwrap(),
+        ResponseAttribution::Owned(r1.clone())
+    );
+    let mut conflicting = third;
     conflicting["item"]["arguments"] = json!("different");
     assert!(
         tracker
-            .observe(&ResponseEvent::decode(conflicting).unwrap())
+            .observe(Some("d"), &ResponseEvent::decode(conflicting).unwrap())
             .is_err()
     );
-    assert_eq!(tracker.calls("r2").unwrap().len(), 1);
-    assert_eq!(tracker.remove("r1").unwrap().len(), 2);
-    assert_eq!(tracker.active_response_id(), Some("r2"));
-    assert_eq!(tracker.remove("r2").unwrap().len(), 1);
-    assert_eq!(tracker.active_response_id(), None);
+    track_lifecycle(&mut tracker, Some("d"), "response.completed", "r2");
+    assert!(
+        tracker.ready_calls(&r2).is_none(),
+        "conflicting facts poison the barrier"
+    );
+    assert_eq!(tracker.calls(&r2).unwrap().len(), 1);
+    assert_eq!(tracker.remove(&r1).unwrap().len(), 2);
+    assert_eq!(tracker.remove(&r2).unwrap().len(), 1);
+    assert!(tracker.calls(&r1).is_none());
+    assert!(tracker.terminal(&r2).is_none());
+}
+
+fn track_lifecycle(
+    tracker: &mut FunctionCallTracker,
+    scope: Option<&str>,
+    kind: &str,
+    id: &str,
+) -> ResponseKey {
+    let event = ResponseEvent::decode(lifecycle(kind, id)).unwrap();
+    let ResponseAttribution::Owned(key) = tracker.observe(scope, &event).unwrap() else {
+        panic!("lifecycle carries an explicit identity");
+    };
+    key
 }
 
 #[test]
@@ -1352,11 +1383,11 @@ fn debug_redacts_inputs_functions_unknown_events_and_tracking() {
     assert!(!format!("{event:?}").contains(secret));
     assert!(!format!("{:?}", event.completed_function_call().unwrap()).contains(secret));
     let mut tracker = FunctionCallTracker::default();
-    tracker
-        .observe(&ResponseEvent::decode(lifecycle("response.created", secret)).unwrap())
-        .unwrap();
-    tracker.observe(&event).unwrap();
+    let key = track_lifecycle(&mut tracker, Some(secret), "response.created", secret);
+    let attribution = tracker.observe(Some(secret), &event).unwrap();
     assert!(!format!("{tracker:?}").contains(secret));
+    assert!(!format!("{key:?}").contains(secret));
+    assert!(!format!("{attribution:?}").contains(secret));
     let unknown = ResponseEvent::decode(json!({"type":secret,"content":secret})).unwrap();
     assert!(!format!("{unknown:?}").contains(secret));
     let snapshot = ResponseEvent::decode(lifecycle("response.created", secret)).unwrap();
@@ -1364,6 +1395,7 @@ fn debug_redacts_inputs_functions_unknown_events_and_tracking() {
 }
 
 #[test]
+#[allow(clippy::float_cmp)] // Exact binary-representable wire fixtures; no arithmetic.
 fn lifecycle_timestamps_and_stream_logprobs_use_strict_numbers() {
     let mut wire = lifecycle("response.completed", "r");
     wire["response"]["completed_at"] = json!(1_700_000_001.75);
@@ -1394,7 +1426,544 @@ fn lifecycle_timestamps_and_stream_logprobs_use_strict_numbers() {
     };
     assert_eq!(logprobs[0].logprob, -0.25);
     assert!(!format!("{:?}", logprobs[0]).contains("secret"));
-    assert!(!format!("{:?}", logprobs[0].top_logprobs[0]).contains("secret"));
+    assert!(!format!("{:?}", logprobs[0].top_logprobs.as_ref().unwrap()[0]).contains("secret"));
     text["logprobs"][0]["logprob"] = json!("-0.25");
     assert!(ResponseEvent::decode(text).is_err());
+}
+
+#[test]
+fn streaming_logprobs_allow_omitted_and_partial_but_not_null_fields() {
+    for kind in ["delta", "done"] {
+        let mut text = json!({
+            "type":format!("response.output_text.{kind}"),"sequence_number":3,"item_id":"i",
+            "output_index":0,"content_index":0,"delta":"x","text":"x","logprobs":[]
+        });
+        for logprob in [
+            json!({"token":"x","logprob":-0.25}),
+            json!({"token":"x","logprob":-0.25,"top_logprobs":[]}),
+            json!({"token":"x","logprob":-0.25,"top_logprobs":[{}]}),
+            json!({"token":"x","logprob":-0.25,"top_logprobs":[{"token":"y"},{"logprob":-0.5}]}),
+        ] {
+            text["logprobs"] = json!([logprob]);
+            let decoded = ResponseEvent::decode(text.clone()).unwrap();
+            let (ResponseEvent::OutputTextDelta {
+                logprobs: probabilities,
+                ..
+            }
+            | ResponseEvent::OutputTextDone {
+                logprobs: probabilities,
+                ..
+            }) = decoded
+            else {
+                panic!("expected a typed text event");
+            };
+            assert_eq!(probabilities.len(), 1);
+        }
+        for invalid in [
+            json!({"token":"x","logprob":-0.25,"top_logprobs":null}),
+            json!({"token":"x","logprob":-0.25,"top_logprobs":[null]}),
+            json!({"token":"x","logprob":-0.25,"top_logprobs":[{"token":null}]}),
+            json!({"token":"x","logprob":-0.25,"top_logprobs":[{"logprob":null}]}),
+            json!({"token":"x","logprob":-0.25,"top_logprobs":[{"logprob":"-0.5"}]}),
+            json!({"token":null,"logprob":-0.25}),
+            json!({"token":"x"}),
+        ] {
+            text["logprobs"] = json!([invalid]);
+            assert!(ResponseEvent::decode(text.clone()).is_err());
+        }
+    }
+}
+
+fn file_search_command(tool: Value) -> Value {
+    let mut command = json!({"type":"response.item.create","item":{"type":"tool_search_output"}});
+    command["item"]["tools"] = Value::Array(vec![tool]);
+    command
+}
+
+#[test]
+fn recursive_filters_reject_invalid_children_through_outbound_codec() {
+    let codec = Codec::default();
+    let nested = json!({"type":"and","filters":[
+        {"type":"eq","key":"color","value":"blue"},
+        {"type":"or","filters":[{"type":"in","key":"size","value":[1.0,"large"]},
+            {"type":"and","filters":[{"type":"ne","key":"hidden","value":true}]}]}
+    ]});
+    let mut wire =
+        file_search_command(json!({"type":"file_search","vector_store_ids":[],"filters":nested}));
+    let event = codec.decode_client(&wire.to_string()).unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&codec.encode(&event).unwrap()).unwrap(),
+        wire
+    );
+    for invalid in [
+        json!({"type":"eq","key":"color"}),
+        json!({"type":"eq","key":"color","value":"blue","unknown":true}),
+        json!({"type":"and","filters":[],"unknown":true}),
+        json!({"type":"and"}),
+        json!({"type":"unknown","filters":[]}),
+        json!({"type":"in","key":"flag","value":[true]}),
+        json!({}),
+        json!(true),
+        json!(42),
+        json!("filter"),
+        json!([]),
+        Value::Null,
+    ] {
+        wire["item"]["tools"][0]["filters"]["filters"][1]["filters"][1]["filters"][0] = invalid;
+        assert!(codec.decode_client(&wire.to_string()).is_err());
+    }
+}
+
+#[test]
+fn reachable_search_and_image_numeric_bounds_apply_on_decode_and_encode() {
+    let codec = Codec::default();
+    for (field, valid, invalid) in [
+        (
+            "max_num_results",
+            vec![json!(1), json!(50)],
+            vec![json!(0), json!(51), json!(-1)],
+        ),
+        (
+            "score_threshold",
+            vec![json!(0), json!(0.5), json!(1)],
+            vec![json!(-0.01), json!(1.01)],
+        ),
+        (
+            "score",
+            vec![json!(0), json!(1)],
+            vec![json!(-0.01), json!(1.25)],
+        ),
+        (
+            "output_compression",
+            vec![json!(0), json!(100)],
+            vec![json!(-1), json!(101)],
+        ),
+        (
+            "partial_images",
+            vec![json!(0), json!(3)],
+            vec![json!(-1), json!(4)],
+        ),
+    ] {
+        for (values, accepted) in [(valid, true), (invalid, false)] {
+            for value in values {
+                let mut wire = match field {
+                    "score" => json!({"type":"response.item.create","item":{
+                        "type":"file_search_call","id":"i","queries":[],"status":"completed","results":[{"score":value}]}}),
+                    "score_threshold" => {
+                        file_search_command(json!({"type":"file_search","vector_store_ids":[],
+                        "ranking_options":{"score_threshold":value}}))
+                    }
+                    "max_num_results" => {
+                        file_search_command(json!({"type":"file_search","vector_store_ids":[]}))
+                    }
+                    _ => file_search_command(json!({"type":"image_generation"})),
+                };
+                if !matches!(field, "score" | "score_threshold") {
+                    wire["item"]["tools"][0][field] = value;
+                }
+                assert_eq!(
+                    codec.decode_client(&wire.to_string()).is_ok(),
+                    accepted,
+                    "{field}: {wire}"
+                );
+                let event: ClientEvent = serde_json::from_value(wire).unwrap();
+                assert_eq!(codec.encode(&event).is_ok(), accepted, "{field}");
+            }
+        }
+    }
+    // The pinned schema sets no range for hybrid weights; don't invent one.
+    codec
+        .decode_client(
+            &file_search_command(json!({"type":"file_search","vector_store_ids":[],
+        "ranking_options":{"hybrid_search":{"embedding_weight":1.25,"text_weight":2.5}}}))
+            .to_string(),
+        )
+        .unwrap();
+    for value in [json!(1.5), json!("1"), Value::Null] {
+        let wire = file_search_command(
+            json!({"type":"file_search","vector_store_ids":[],"max_num_results":value}),
+        );
+        assert!(codec.decode_client(&wire.to_string()).is_err());
+    }
+}
+
+#[test]
+fn overlapping_responses_preserve_bound_items_and_never_guess_new_owners() {
+    let mut tracker = FunctionCallTracker::default();
+    let r1 = track_lifecycle(&mut tracker, Some("d"), "response.created", "r1");
+    let mut added = finished_call("c1");
+    added["type"] = json!("response.output_item.added");
+    added["item"]["status"] = json!("in_progress");
+    tracker
+        .observe(Some("d"), &ResponseEvent::decode(added).unwrap())
+        .unwrap();
+    let r2 = track_lifecycle(&mut tracker, Some("d"), "response.created", "r2");
+    let done = ResponseEvent::decode(finished_call("c1")).unwrap();
+    assert_eq!(
+        tracker.observe(Some("d"), &done).unwrap(),
+        ResponseAttribution::Owned(r1.clone())
+    );
+    track_lifecycle(&mut tracker, Some("d"), "response.completed", "r2");
+    assert!(
+        tracker.ready_calls(&r1).is_none(),
+        "another response's completion is not a barrier"
+    );
+    assert_eq!(tracker.ready_calls(&r2).unwrap().len(), 0);
+    track_lifecycle(&mut tracker, Some("d"), "response.completed", "r1");
+    assert_eq!(tracker.ready_calls(&r1).unwrap().len(), 1);
+
+    let mut tracker = FunctionCallTracker::default();
+    let r1 = track_lifecycle(&mut tracker, Some("d"), "response.created", "r1");
+    let r2 = track_lifecycle(&mut tracker, Some("d"), "response.created", "r2");
+    assert_eq!(
+        tracker.observe(Some("d"), &done).unwrap(),
+        ResponseAttribution::Ambiguous(vec![r1.clone(), r2.clone()])
+    );
+    for key in [&r1, &r2] {
+        assert!(tracker.calls(key).unwrap().is_empty());
+        track_lifecycle(
+            &mut tracker,
+            Some("d"),
+            "response.completed",
+            &key.response_id,
+        );
+        assert!(tracker.ready_calls(key).is_none());
+    }
+}
+
+#[test]
+fn independent_delegations_and_unattributed_envelopes_are_explicit() {
+    let mut tracker = FunctionCallTracker::default();
+    let a = track_lifecycle(&mut tracker, Some("a"), "response.created", "same-id");
+    let b = track_lifecycle(&mut tracker, Some("b"), "response.created", "same-id");
+    let event = ResponseEvent::decode(finished_call("same-call-id")).unwrap();
+    assert_eq!(
+        tracker.observe(Some("a"), &event).unwrap(),
+        ResponseAttribution::Owned(a.clone())
+    );
+    assert_eq!(
+        tracker.observe(Some("b"), &event).unwrap(),
+        ResponseAttribution::Owned(b.clone())
+    );
+    track_lifecycle(&mut tracker, Some("a"), "response.completed", "same-id");
+    assert!(tracker.ready_calls(&a).is_some());
+    assert!(tracker.ready_calls(&b).is_none());
+    for scope in [Field::Absent, Field::Null] {
+        let mut wire =
+            json!({"type":"response.event","event_id":"e","event":finished_call("orphan")});
+        if matches!(scope, Field::Null) {
+            wire["delegation_id"] = Value::Null;
+        }
+        let frame = Codec::default().decode_server(&wire.to_string()).unwrap();
+        let ServerEvent::Response { delegation_id, .. } = &frame.event else {
+            panic!("response envelope")
+        };
+        assert_eq!(*delegation_id, scope);
+        assert_eq!(
+            tracker
+                .observe(
+                    delegation_id.value().map(String::as_str),
+                    &frame.response_event().unwrap().unwrap()
+                )
+                .unwrap(),
+            ResponseAttribution::Unowned
+        );
+    }
+    track_lifecycle(&mut tracker, Some("b"), "response.completed", "same-id");
+    assert!(
+        tracker.ready_calls(&b).is_none(),
+        "unattributed granular facts cannot be ignored"
+    );
+    let unknown = track_lifecycle(&mut tracker, None, "response.created", "unknown");
+    assert_eq!(
+        tracker.observe(None, &event).unwrap(),
+        ResponseAttribution::Unowned
+    );
+    track_lifecycle(&mut tracker, None, "response.completed", "unknown");
+    assert!(tracker.ready_calls(&unknown).is_none());
+    assert!(
+        tracker.ready_calls(&a).is_some(),
+        "later unknown facts do not reopen a finished response"
+    );
+}
+
+#[test]
+fn unfinished_failed_partial_and_lost_streams_never_expose_ready_batches() {
+    for terminal in [
+        "response.completed",
+        "response.failed",
+        "response.incomplete",
+    ] {
+        let mut tracker = FunctionCallTracker::default();
+        let key = track_lifecycle(&mut tracker, Some("d"), "response.created", "r");
+        let mut added = finished_call("c");
+        added["type"] = json!("response.output_item.added");
+        tracker
+            .observe(Some("d"), &ResponseEvent::decode(added).unwrap())
+            .unwrap();
+        track_lifecycle(&mut tracker, Some("d"), terminal, "r");
+        assert!(tracker.ready_calls(&key).is_none());
+        assert!(
+            tracker
+                .observe(
+                    Some("d"),
+                    &ResponseEvent::decode(finished_call("c")).unwrap()
+                )
+                .is_err(),
+            "late done cannot repair an observed terminal barrier"
+        );
+    }
+    for terminal in ["response.failed", "response.incomplete"] {
+        let mut tracker = FunctionCallTracker::default();
+        let key = track_lifecycle(&mut tracker, Some("d"), "response.created", "r");
+        tracker
+            .observe(
+                Some("d"),
+                &ResponseEvent::decode(finished_call("c")).unwrap(),
+            )
+            .unwrap();
+        track_lifecycle(&mut tracker, Some("d"), terminal, "r");
+        assert_eq!(tracker.calls(&key).unwrap().len(), 1);
+        assert!(tracker.ready_calls(&key).is_none());
+    }
+    let mut tracker = FunctionCallTracker::default();
+    let missing_start = track_lifecycle(&mut tracker, Some("d"), "response.completed", "missed");
+    assert!(tracker.ready_calls(&missing_start).is_none());
+    let partial = track_lifecycle(&mut tracker, Some("d"), "response.created", "partial");
+    let mut done = finished_call("c");
+    done["item"]["status"] = json!("incomplete");
+    tracker
+        .observe(Some("d"), &ResponseEvent::decode(done).unwrap())
+        .unwrap();
+    track_lifecycle(&mut tracker, Some("d"), "response.completed", "partial");
+    assert!(tracker.ready_calls(&partial).is_none());
+    let lost = track_lifecycle(&mut tracker, Some("d"), "response.created", "lost");
+    tracker.mark_uncertain(Some("d"));
+    track_lifecycle(&mut tracker, Some("d"), "response.completed", "lost");
+    assert!(tracker.ready_calls(&lost).is_none());
+}
+
+#[test]
+fn object_only_shared_fields_preserve_open_keys_but_reject_other_shapes() {
+    let codec = Codec::default();
+    for (mut item, path, nullable) in [
+        (
+            json!({"type":"tool_search_call","arguments":{}}),
+            "/arguments",
+            false,
+        ),
+        (
+            json!({"type":"tool_search_output","tools":[{"type":"namespace","name":"n","description":"",
+            "tools":[{"type":"function","name":"f","parameters":{}}]}]}),
+            "/tools/0/tools/0/parameters",
+            true,
+        ),
+        (
+            json!({"type":"tool_search_output","tools":[{"type":"tool_search","parameters":{}}]}),
+            "/tools/0/parameters",
+            true,
+        ),
+        (
+            json!({"type":"mcp_list_tools","id":"i","server_label":"s","tools":[{"name":"f","input_schema":{}}]}),
+            "/tools/0/input_schema",
+            false,
+        ),
+        (
+            json!({"type":"mcp_list_tools","id":"i","server_label":"s","tools":[{"name":"f","input_schema":{},"annotations":{}}]}),
+            "/tools/0/annotations",
+            true,
+        ),
+    ] {
+        for object in [json!({}), json!({"arbitrary":[null,1,"x",{"nested":true}]})] {
+            *item.pointer_mut(path).unwrap() = object;
+            let wire = json!({"type":"response.item.create","item":item});
+            let event = codec.decode_client(&wire.to_string()).unwrap();
+            assert_eq!(
+                serde_json::from_str::<Value>(&codec.encode(&event).unwrap()).unwrap(),
+                wire
+            );
+        }
+        for invalid in [
+            Value::Null,
+            json!([]),
+            json!([{}]),
+            json!(1),
+            json!("schema"),
+            json!(true),
+        ] {
+            *item.pointer_mut(path).unwrap() = invalid.clone();
+            assert_eq!(
+                codec
+                    .decode_client(&json!({"type":"response.item.create","item":item}).to_string())
+                    .is_ok(),
+                nullable && invalid.is_null(),
+                "{path}: {invalid}"
+            );
+        }
+    }
+    // This genuinely unconstrained schema must still accept any JSON value.
+    for value in [Value::Null, json!([]), json!(42)] {
+        roundtrip::<ResponseMcpToolExecutionError>(
+            &json!({"type":"mcp_tool_execution_error","content":value}).to_string(),
+        );
+    }
+}
+
+#[test]
+fn function_output_text_bound_is_per_alternative_and_counts_characters() {
+    let codec = Codec::default();
+    for (length, accepted) in [(10_485_760, true), (10_485_761, false)] {
+        let item = ResponseInputItem::function_call_output("call", "x".repeat(length));
+        assert_eq!(item.validate().is_ok(), accepted);
+        let event = ClientEvent::new(Command::ResponseItemCreate { item });
+        assert_eq!(codec.encode(&event).is_ok(), accepted);
+    }
+    let text = ResponseInputItem::function_call_output("call", "é".repeat(5_242_881));
+    assert!(
+        text.validate().is_ok(),
+        "length is characters, not UTF-8 bytes"
+    );
+    codec
+        .encode(&ClientEvent::new(Command::ResponseItemCreate {
+            item: text,
+        }))
+        .unwrap();
+    let item = serde_json::from_value(json!({"type":"function_call_output","output":[
+        {"type":"input_text","text":"x".repeat(6_000_000)},
+        {"type":"input_text","text":"y".repeat(6_000_000)}
+    ]}))
+    .unwrap();
+    codec
+        .encode(&ClientEvent::new(Command::ResponseItemCreate { item }))
+        .unwrap();
+}
+
+#[test]
+fn shared_arrays_identifiers_and_attribute_bounds_are_recursive() {
+    let codec = Codec::default();
+    let validate = |item: Value, accepted| {
+        let wire = json!({"type":"response.item.create","item":item});
+        assert_eq!(codec.decode_client(&wire.to_string()).is_ok(), accepted);
+        let event: ClientEvent = serde_json::from_value(wire).unwrap();
+        assert_eq!(codec.encode(&event).is_ok(), accepted);
+    };
+    for (length, accepted) in [(50, true), (51, false)] {
+        for container in ["auto", "container_auto"] {
+            let tool = if container == "auto" {
+                json!({"type":"code_interpreter","container":{"type":container,"file_ids":vec!["file";length]}})
+            } else {
+                json!({"type":"shell","environment":{"type":container,"file_ids":vec!["file";length]}})
+            };
+            validate(
+                json!({"type":"tool_search_output","tools":[tool]}),
+                accepted,
+            );
+        }
+    }
+    for (length, accepted) in [(200, true), (201, false)] {
+        for local in [true, false] {
+            let skill = if local {
+                json!({"description":"","name":"","path":""})
+            } else {
+                json!({"type":"skill_reference","skill_id":"s"})
+            };
+            let environment = if local { "local" } else { "container_auto" };
+            validate(
+                json!({"type":"tool_search_output","tools":[{"type":"shell","environment":{
+                    "type":environment,"skills":vec![skill;length]
+                }}]}),
+                accepted,
+            );
+        }
+    }
+    for tool in [
+        json!({"type":"mcp","server_label":"s","server_url":"https://example.test"}),
+        json!({"type":"code_interpreter","container":"c"}),
+        json!({"type":"shell"}),
+        json!({"type":"custom","name":"c"}),
+        json!({"type":"apply_patch"}),
+        json!({"type":"namespace","name":"n","description":"","tools":[{"type":"function","name":"f"}]}),
+    ] {
+        for callers in [json!(null), json!(["direct"]), json!([])] {
+            let mut tool = tool.clone();
+            if tool["type"] == "namespace" {
+                tool["tools"][0]["allowed_callers"] = callers.clone();
+            } else {
+                tool["allowed_callers"] = callers.clone();
+            }
+            validate(
+                json!({"type":"tool_search_output","tools":[tool]}),
+                callers != json!([]),
+            );
+        }
+    }
+    for (name, accepted) in [
+        ("ok_1-name", true),
+        ("bad.name", false),
+        ("é", false),
+        ("", false),
+    ] {
+        validate(
+            json!({"type":"function_call_output","namespace":name,"output":""}),
+            accepted,
+        );
+        validate(
+            json!({"type":"tool_search_output","tools":[{"type":"namespace","name":"n","description":"",
+            "tools":[{"type":"function","name":name}]}]}),
+            accepted,
+        );
+    }
+    for (tunnel, accepted) in [
+        ("tunnel_abcdefghijklmnopqrstuvwxyz012345", true),
+        ("tunnel_short", false),
+        ("tunnel_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345", false),
+    ] {
+        validate(
+            json!({"type":"tool_search_output","tools":[{"type":"mcp","server_label":"s","tunnel_id":tunnel}]}),
+            accepted,
+        );
+    }
+    for (count, key_len, value_len, accepted) in [
+        (16, 64, 512, true),
+        (17, 64, 512, false),
+        (1, 65, 512, false),
+        (1, 64, 513, false),
+    ] {
+        let attributes: serde_json::Map<_, _> = (0..count)
+            .map(|i| {
+                (
+                    format!("{i:02}{}", "k".repeat(key_len - 2)),
+                    json!("v".repeat(value_len)),
+                )
+            })
+            .collect();
+        validate(
+            json!({"type":"file_search_call","id":"i","queries":[],"status":"completed","results":[{"attributes":attributes}]}),
+            accepted,
+        );
+    }
+    validate(
+        json!({"type":"tool_search_output","tools":[{"type":"namespace","name":"n","description":"","tools":[]}]}),
+        false,
+    );
+    for (domains, secrets, accepted) in [
+        (json!(["example.test"]), None, true),
+        (json!([]), None, false),
+        (json!(["example.test"]), Some(json!([])), false),
+        (
+            json!(["example.test"]),
+            Some(json!([{"domain":"example.test","name":"key","value":"synthetic"}])),
+            true,
+        ),
+    ] {
+        let mut policy = json!({"type":"allowlist","allowed_domains":domains});
+        if let Some(secrets) = secrets {
+            policy["domain_secrets"] = secrets;
+        }
+        validate(
+            json!({"type":"tool_search_output","tools":[{"type":"code_interpreter","container":{
+            "type":"auto","network_policy":policy}}]}),
+            accepted,
+        );
+    }
 }
