@@ -1,16 +1,16 @@
 [package]
 name = "oai-rt-rs"
-version = "0.4.1"
+version = "0.5.0"
 edition = "2024"
 rust-version = "1.85.0"
 authors = ["Luka Crnkovic-Friis"]
-description = "Rust SDK for the OpenAI Realtime API"
+description = "Rust SDK for the OpenAI Realtime and Live APIs"
 license = "MIT"
 repository = "https://github.com/lukacf/oai-rt-rs"
 documentation = "https://docs.rs/oai-rt-rs"
 homepage = "https://github.com/lukacf/oai-rt-rs"
 readme = "README.md"
-keywords = ["openai", "realtime", "api", "client", "audio"]
+keywords = ["openai", "realtime", "live", "api", "audio"]
 categories = ["api-bindings", "asynchronous"]
 
 [features]
@@ -46,6 +46,7 @@ tracing-subscriber = { version = "0.3", features = ["fmt"] }
 
 [lints.rust]
 unsafe_code = "forbid"
+unnameable_test_items = "deny"
 
 [lints.clippy]
 all = "warn"

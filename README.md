@@ -1,6 +1,10 @@
-# Rust OpenAI Realtime SDK
+# Rust OpenAI Realtime and Live SDK
 
 A Rust client for the [OpenAI Realtime API](https://platform.openai.com/docs/guides/realtime).
+
+The separate [`oai_rt_rs::live` API](docs/live.md) supports the released
+`gpt-live-1` protocol, authenticated public transports, continuous audio, and
+delegated backend work. It does not route through Realtime or the private adapter.
 
 [![Crates.io](https://img.shields.io/crates/v/oai-rt-rs.svg)](https://crates.io/crates/oai-rt-rs)
 [![Documentation](https://docs.rs/oai-rt-rs/badge.svg)](https://docs.rs/oai-rt-rs)
@@ -20,14 +24,18 @@ A Rust client for the [OpenAI Realtime API](https://platform.openai.com/docs/gui
 - Async interface using `tokio` and `tokio-tungstenite`.
 - Client-side validation for GA constraints (PCM 24kHz, output modalities, 15MB audio chunks).
 - Feature-gated mechanical support for the private, pre-release GPT Live protocol.
+- Public GPT-Live types, strict codecs, bounded full-duplex WebSockets, and explicit final usage.
 
 ## Experimental GPT Live protocol
+
+This section describes the **private adapter only**, not the public GPT-Live API.
+New public integrations should use [`oai_rt_rs::live`](docs/live.md).
 
 Enable the private GPT Live protocol surface explicitly:
 
 ```toml
 [dependencies]
-oai-rt-rs = { version = "0.4.1", features = ["experimental-gpt-live"] }
+oai-rt-rs = { version = "0.5.0", features = ["experimental-gpt-live"] }
 ```
 
 This feature is intentionally separate from the GA Realtime API. It provides
