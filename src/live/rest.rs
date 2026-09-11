@@ -273,13 +273,25 @@ impl LiveClient {
     }
 
     async fn http_error(&self, response: Response) -> Error {
+        self.http_error_until(
+            response,
+            tokio::time::Instant::now() + self.options.request_timeout,
+        )
+        .await
+    }
+
+    pub(super) async fn http_error_until(
+        &self,
+        response: Response,
+        deadline: tokio::time::Instant,
+    ) -> Error {
         let status = response.status().as_u16();
         let headers = response.headers().clone();
         let request_id = header(&response, "x-request-id");
         let retry_after = header(&response, "retry-after");
         let content_type = header(&response, "content-type");
         let (body, body_issue) =
-            diagnostic_body(response, self.options.codec.max_event_bytes).await;
+            diagnostic_body(response, self.options.codec.max_event_bytes, deadline).await;
         Error::Http {
             status,
             headers: Box::new(headers),
@@ -304,14 +316,18 @@ fn media_type(value: &str) -> &str {
     value.split(';').next().unwrap_or("").trim()
 }
 
-async fn diagnostic_body(mut response: Response, limit: usize) -> (Vec<u8>, Option<HttpBodyIssue>) {
+async fn diagnostic_body(
+    mut response: Response,
+    limit: usize,
+    deadline: tokio::time::Instant,
+) -> (Vec<u8>, Option<HttpBodyIssue>) {
     let declared_oversize = response
         .content_length()
         .is_some_and(|size| size > limit as u64);
     let mut body = Vec::new();
     loop {
-        match response.chunk().await {
-            Ok(Some(chunk)) => {
+        match tokio::time::timeout_at(deadline, response.chunk()).await {
+            Ok(Ok(Some(chunk))) => {
                 let remaining = limit.saturating_sub(body.len());
                 let kept = chunk.len().min(remaining);
                 body.extend_from_slice(&chunk[..kept]);
@@ -319,8 +335,8 @@ async fn diagnostic_body(mut response: Response, limit: usize) -> (Vec<u8>, Opti
                     return (body, Some(HttpBodyIssue::Truncated));
                 }
             }
-            Ok(None) => return (body, None),
-            Err(_) => return (body, Some(HttpBodyIssue::ReadFailed)),
+            Ok(Ok(None)) => return (body, None),
+            Ok(Err(_)) | Err(_) => return (body, Some(HttpBodyIssue::ReadFailed)),
         }
     }
 }

@@ -188,10 +188,21 @@ and a bounded body prefix. `HttpBodyIssue` distinguishes truncation from failed
 body reads, without losing known HTTP metadata. Request/event/error Debug output
 redacts content and credentials; raw bodies require explicit access.
 
-Failed WebSocket upgrades expose only the bytes buffered with the handshake.
-They remain `Unconfirmed` unless a single ASCII-digits `Content-Length` exactly
-matches that buffer and there is no `Transfer-Encoding`. No second request is
-made to guess the body. Delegation validation retains only the immutable mode,
+Public Live WebSocket connections perform authenticated HTTP/1.1 upgrade through `reqwest`,
+validate the upgrade/connection tokens and accept key, and reject unoffered
+subprotocols/extensions before handing raw upgraded IO to `tungstenite`. This
+avoids the upstream authenticated-handshake TRACE path, which logs raw headers;
+application logging levels are not overridden. Redirects and protocol retries
+are disabled. Synthetic-key TRACE fixtures cover primary, fork and sideband
+success and failure.
+
+Rejected HTTP upgrades use the same bounded body reader as REST errors, never a
+second request. EOF/chunked completion is verified by the HTTP parser; truncated
+or timed-out bodies retain status, headers and their prefix as `ReadFailed`.
+The original handshake deadline also bounds rejection-body reading without
+erasing known HTTP evidence. Invalid 101 upgrade responses remain `Unconfirmed`;
+their bytes are not treated as a proven HTTP entity or valid WebSocket data.
+Delegation validation retains only the immutable mode,
 not an unbounded history of delegation IDs; the provider validates unknown IDs.
 
 `session.closed` reasons are `close_requested`, `expired`, `content`,
@@ -389,6 +400,8 @@ Deterministic suites are `live_models`, `live_codec`, `live_calls`, `live_fork`,
 `live_ws_adversarial`, plus `live_ws_http_errors`. They cover wire forms, null/absent distinctions, unknown
 fields, bounds, HTTP failures, complete function items, ordering, backpressure,
 cancellation, malformed-event draining, final usage and credential redaction.
+`live_ws_upgrade` covers authenticated TRACE redaction and RFC upgrade checks;
+`live_probe_evidence` checks the probes' own false-success boundaries.
 
 | Public contract | Implementation | Deterministic coverage / native probe |
 | --- | --- | --- |
@@ -405,6 +418,7 @@ cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 RUSTDOCFLAGS=-Dwarnings cargo doc --no-deps --all-features
 cargo package --all-features
+python3 -m unittest discover -s scripts -p 'test_live_probe_support.py'
 ```
 
 Live examples are **explicit, billable, bounded** probes requiring a server-side
@@ -435,8 +449,24 @@ created, and terminal status, including partial admission after an error.
 The peer harness requires `aiortc` and `av`; Rust performs signaling and sideband
 control, while the Python peer verifies real media, meaningful voiced energy,
 captions and finalization. Packet receipt/comfort noise alone is not a speech
-pass. Recording probes verify stereo PCM data in memory and create a distinct WS
-fork; the peer harness separately exercises the HTTP/RTC fork.
+pass. All formats, including 16 kHz PCM and both G.711 encodings, must decode sustained
+speech and the expected caption. Local qualification uses 20 ms windows with
+RMS at least 300 and at least 10% of samples above amplitude 500, requiring 200 ms
+total voiced windows and a contiguous 100 ms run. Stereo/planar media is downmixed
+and padding is trimmed before counting frames at the actual sample rate.
+Silence, sparse impulses, full-scale negative samples and channel/padding
+duration equivalence have deterministic fixtures; these thresholds are probe
+criteria, not provider guarantees or a perceptual audio-quality score.
+
+Every probe latches unexpected provider/decode errors through final drain, still
+attempts final-usage collection, and exits unsuccessfully even if a valid closed
+event follows. Only the restricted-peer probe allows its exact expected
+permission-denial type/code/correlation. ACK evidence requires the exact event
+type and client ID; unrelated or duplicate IDs cannot satisfy a count.
+Recording probes verify stereo PCM data in memory and a distinct WS fork with a
+real paced-input/context/decoded-voice/caption exchange. The peer harness
+separately exercises HTTP/RTC fork with source-versus-new and created-versus-
+attached identity assertions.
 
 Carrier-backed SIP acceptance/rejection/transfer was **not live-qualified**:
 no test trunk/webhook fixture was available, and no phone numbers, project

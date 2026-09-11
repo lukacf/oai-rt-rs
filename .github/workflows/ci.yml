@@ -55,6 +55,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --all-features --all-targets
+      - run: python3 -m unittest discover -s scripts -p 'test_live_probe_support.py'
 
   audit:
     name: Security Audit

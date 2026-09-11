@@ -1,4 +1,5 @@
 //! Explicit, bounded, billable qualification of every non-default primary audio format.
+mod support;
 use oai_rt_rs::live::{
     AudioConfig, AudioFormat, ClientEvent, Command, ConnectionRole, Error, Field, LiveClient,
     Nullable, Result, ServerEvent, SessionConfig,
@@ -14,7 +15,7 @@ async fn probe(client: &LiveClient, format: AudioFormat, silence_byte: u8) -> Re
                 output: None,
             }),
             instructions: Field::Value(
-                "This is a synthetic codec test. Speak briefly when given commentary.".into(),
+                "This is a synthetic codec test. When given commentary, say exactly: The codec test is ready.".into(),
             ),
             ..SessionConfig::default()
         })
@@ -23,7 +24,7 @@ async fn probe(client: &LiveClient, format: AudioFormat, silence_byte: u8) -> Re
     let byte_count = usize::try_from(format.sample_rate())
         .map_err(|_| Error::Invalid("unsupported platform sample rate".into()))?
         * format.bytes_per_sample()
-        * 3;
+        * 6;
     let samples_per_chunk = usize::try_from(format.sample_rate() / 10)
         .map_err(|_| Error::Invalid("unsupported platform sample rate".into()))?;
     let audio = tokio::spawn(async move {
@@ -31,9 +32,11 @@ async fn probe(client: &LiveClient, format: AudioFormat, silence_byte: u8) -> Re
             .send_audio_paced(&vec![silence_byte; byte_count], samples_per_chunk)
             .await
     });
-    let mut acknowledged = false;
+    let mut acks = support::Acks::new(&[("session.commentary.appended", "codec-context")]);
     let mut negotiated = false;
     let mut output_bytes = 0;
+    let mut speech = support::Speech::default();
+    let mut transcript = String::new();
     let deadline = Instant::now() + Duration::from_secs(10);
     let result = async {
         connection
@@ -53,21 +56,30 @@ async fn probe(client: &LiveClient, format: AudioFormat, silence_byte: u8) -> Re
             .await
             .map_err(|_| Error::Timeout)??
             .ok_or(Error::UnconfirmedClose)?;
-            acknowledged |= frame.client_event_id.as_deref() == Some("codec-context");
+            support::check_frame(&frame)?;
+            acks.observe(&frame);
             if let Some(chunk) = frame.audio(ConnectionRole::Primary, format)? {
                 if chunk.format != format {
                     return Err(Error::Invalid("unexpected output format".into()));
                 }
                 output_bytes += chunk.bytes.len();
+                speech.add(&chunk.bytes, format)?;
             }
             match frame.event {
                 ServerEvent::Started { session, .. } => {
                     negotiated = session.audio.and_then(|audio| audio.format) == Some(format);
                 }
                 ServerEvent::Error { error, .. } => return Err(Error::Provider(error)),
+                ServerEvent::OutputTranscriptDelta { delta, .. } => {
+                    support::append_text(&mut transcript, &delta)?;
+                }
                 _ => {}
             }
-            if acknowledged && negotiated && output_bytes > 0 {
+            if acks.complete()
+                && negotiated
+                && speech.qualified()
+                && transcript.contains("The codec test is ready")
+            {
                 return Ok(());
             }
         }
@@ -75,9 +87,7 @@ async fn probe(client: &LiveClient, format: AudioFormat, silence_byte: u8) -> Re
     .await;
     audio.abort();
     let audio_result = audio.await;
-    let closed = connection
-        .close(Duration::from_secs(10), |_| Ok(()))
-        .await?;
+    let closed = support::close(&mut connection).await?;
     match audio_result {
         Ok(result) => result?,
         Err(error) if error.is_cancelled() => {}
@@ -91,8 +101,8 @@ async fn probe(client: &LiveClient, format: AudioFormat, silence_byte: u8) -> Re
         "{}",
         serde_json::json!({
             "probe":"public-live-primary-format","format":format,"format_echoed":negotiated,
-            "context_ack":acknowledged,"output_bytes":output_bytes,"final_seconds":usage.seconds,
-            "acoustic_fidelity_asserted":false,
+            "context_ack":acks.complete(),"output_bytes":output_bytes,"final_seconds":usage.seconds,
+            "decoded_speech":speech.report(),"expected_transcript":true,
         })
     );
     Ok(())

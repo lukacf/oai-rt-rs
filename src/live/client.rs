@@ -49,7 +49,7 @@ impl Default for ClientOptions {
 #[derive(Clone)]
 pub struct LiveClient {
     pub(super) http: reqwest::Client,
-    pub(super) headers: HeaderMap,
+    pub(super) websocket_http: reqwest::Client,
     pub(super) options: ClientOptions,
 }
 
@@ -111,12 +111,21 @@ impl LiveClient {
         let http = reqwest::Client::builder()
             .default_headers(headers.clone())
             .redirect(reqwest::redirect::Policy::none())
+            .retry(reqwest::retry::never())
             .timeout(options.request_timeout)
             .build()
             .map_err(|_| Error::Transport("HTTP client initialization".into()))?;
+        let websocket_http = reqwest::Client::builder()
+            .default_headers(headers)
+            .http1_only()
+            .redirect(reqwest::redirect::Policy::none())
+            .retry(reqwest::retry::never())
+            .timeout(options.request_timeout)
+            .build()
+            .map_err(|_| Error::Transport("WebSocket HTTP client initialization".into()))?;
         Ok(Self {
             http,
-            headers,
+            websocket_http,
             options,
         })
     }

@@ -2,16 +2,15 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use futures::{SinkExt, StreamExt, stream::SplitSink};
 use std::{collections::VecDeque, future::Future, pin::Pin, time::Duration};
 use tokio::{
-    net::TcpStream,
     sync::{mpsc, oneshot, watch},
     task::JoinHandle,
     time::{Instant, timeout},
 };
 use tokio_tungstenite::{
-    MaybeTlsStream, WebSocketStream, connect_async_with_config,
+    WebSocketStream,
     tungstenite::{
-        client::IntoClientRequest,
-        protocol::{Message, WebSocketConfig},
+        handshake::{client::generate_key, derive_accept_key},
+        protocol::{Message, Role, WebSocketConfig},
     },
 };
 
@@ -21,7 +20,7 @@ use super::{
     ServerEvent, ServerFrame, SessionConfig, decode_audio, validate_audio_bytes,
 };
 
-type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
+type Socket = WebSocketStream<reqwest::Upgraded>;
 
 #[derive(Clone, Copy)]
 enum Startup {
@@ -273,52 +272,40 @@ impl LiveClient {
                 if graceful_close { "true" } else { "false" },
             );
         }
-        let scheme = if url.scheme() == "https" { "wss" } else { "ws" };
-        url.set_scheme(scheme)
-            .map_err(|()| Error::Invalid("invalid WebSocket URL".into()))?;
-        let mut request = url
-            .as_str()
-            .into_client_request()
-            .map_err(|_| Error::Invalid("invalid WebSocket request".into()))?;
-        request.headers_mut().extend(self.headers.clone());
+        let key = generate_key();
+        let deadline = Instant::now() + self.options.request_timeout;
+        // tungstenite's authenticated client handshake logs raw headers at TRACE.
+        // reqwest retains sensitive-header redaction; only upgraded IO reaches it.
+        let response = self
+            .websocket_http
+            .get(url)
+            .header("connection", "Upgrade")
+            .header("upgrade", "websocket")
+            .header("sec-websocket-version", "13")
+            .header("sec-websocket-key", &key)
+            .send()
+            .await
+            .map_err(|error| {
+                if error.is_timeout() {
+                    Error::Timeout
+                } else {
+                    Error::Transport("WebSocket HTTP handshake".into())
+                }
+            })?;
+        if response.status() != reqwest::StatusCode::SWITCHING_PROTOCOLS {
+            return Err(self.http_error_until(response, deadline).await);
+        }
+        let rejected = rejected_upgrade(&response);
+        if !valid_upgrade(&response, &key) {
+            return Err(rejected);
+        }
+        let Ok(Ok(upgraded)) = tokio::time::timeout_at(deadline, response.upgrade()).await else {
+            return Err(rejected);
+        };
         let mut config = WebSocketConfig::default();
         config.max_message_size = Some(self.options.codec.max_event_bytes);
         config.max_frame_size = Some(self.options.codec.max_event_bytes);
-        let result = timeout(
-            self.options.request_timeout,
-            connect_async_with_config(request, Some(config), false),
-        )
-        .await
-        .map_err(|_| Error::Timeout)?;
-        match result {
-            Ok((socket, _)) => Ok(socket),
-            Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
-                let header = |name: &str| {
-                    response
-                        .headers()
-                        .get(name)
-                        .and_then(|h| h.to_str().ok())
-                        .map(str::to_owned)
-                };
-                let mut body = response.body().clone().unwrap_or_default();
-                let body_issue = upgrade_body_issue(
-                    response.headers(),
-                    body.len(),
-                    self.options.codec.max_event_bytes,
-                );
-                body.truncate(self.options.codec.max_event_bytes);
-                Err(Error::Http {
-                    status: response.status().as_u16(),
-                    headers: Box::new(response.headers().clone()),
-                    request_id: header("x-request-id"),
-                    content_type: header("content-type"),
-                    retry_after: header("retry-after"),
-                    body,
-                    body_issue,
-                })
-            }
-            Err(_) => Err(Error::Transport("WebSocket handshake".into())),
-        }
+        Ok(WebSocketStream::from_raw_socket(upgraded, Role::Client, Some(config)).await)
     }
 
     fn spawn(&self, socket: Socket, startup: Startup) -> LiveConnection {
@@ -659,27 +646,58 @@ impl DriverState {
     }
 }
 
-fn upgrade_body_issue(
-    headers: &reqwest::header::HeaderMap,
-    buffered: usize,
-    limit: usize,
-) -> Option<HttpBodyIssue> {
-    if buffered > limit {
-        return Some(HttpBodyIssue::Truncated);
-    }
-    if headers.contains_key("transfer-encoding") {
-        return Some(HttpBodyIssue::Unconfirmed);
-    }
-    let mut lengths = headers.get_all("content-length").iter();
-    let length = lengths
-        .next()
-        .and_then(|value| value.to_str().ok())
-        .filter(|value| !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()))
-        .and_then(|value| value.parse::<usize>().ok());
-    if lengths.next().is_none() && length == Some(buffered) {
-        None
-    } else {
-        Some(HttpBodyIssue::Unconfirmed)
+fn valid_upgrade(response: &reqwest::Response, key: &str) -> bool {
+    let headers = response.headers();
+    let single = |name| {
+        let mut values = headers.get_all(name).iter();
+        let value = values.next()?.to_str().ok()?;
+        values.next().is_none().then_some(value)
+    };
+    let connection = headers
+        .get_all("connection")
+        .iter()
+        .map(|value| value.to_str().ok())
+        .collect::<Option<Vec<_>>>();
+    let connection = connection.is_some_and(|values| {
+        let tokens: Vec<_> = values
+            .iter()
+            .flat_map(|value| value.split(','))
+            .map(str::trim)
+            .collect();
+        tokens
+            .iter()
+            .any(|token| token.eq_ignore_ascii_case("upgrade"))
+            && tokens.iter().all(|token| {
+                !token.is_empty()
+                    && token.bytes().all(|byte| {
+                        byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte)
+                    })
+            })
+    });
+    response.version() == reqwest::Version::HTTP_11
+        && single("upgrade").is_some_and(|value| value.eq_ignore_ascii_case("websocket"))
+        && connection
+        && single("sec-websocket-accept") == Some(derive_accept_key(key.as_bytes()).as_str())
+        && !headers.contains_key("sec-websocket-protocol")
+        && !headers.contains_key("sec-websocket-extensions")
+}
+
+fn rejected_upgrade(response: &reqwest::Response) -> Error {
+    let header = |name| {
+        response
+            .headers()
+            .get(name)
+            .and_then(|h| h.to_str().ok())
+            .map(str::to_owned)
+    };
+    Error::Http {
+        status: response.status().as_u16(),
+        headers: Box::new(response.headers().clone()),
+        request_id: header("x-request-id"),
+        content_type: header("content-type"),
+        retry_after: header("retry-after"),
+        body: Vec::new(),
+        body_issue: Some(HttpBodyIssue::Unconfirmed),
     }
 }
 
@@ -832,46 +850,6 @@ async fn run_driver(
 #[cfg(test)]
 mod framing_tests {
     use super::*;
-    use reqwest::header::{CONTENT_LENGTH, HeaderMap, HeaderValue, TRANSFER_ENCODING};
-
-    #[test]
-    fn error_body_completeness_requires_unambiguous_ascii_content_length() {
-        for (lengths, buffered, expected) in [
-            (vec!["0"], 0, None),
-            (vec!["7"], 7, None),
-            (vec!["007"], 7, None),
-            (vec!["+0"], 0, Some(HttpBodyIssue::Unconfirmed)),
-            (vec!["+7"], 7, Some(HttpBodyIssue::Unconfirmed)),
-            (vec![""], 0, Some(HttpBodyIssue::Unconfirmed)),
-            (vec!["-0"], 0, Some(HttpBodyIssue::Unconfirmed)),
-            (vec!["7 "], 7, Some(HttpBodyIssue::Unconfirmed)),
-            (vec!["0x7"], 7, Some(HttpBodyIssue::Unconfirmed)),
-            (
-                vec!["184467440737095516160"],
-                0,
-                Some(HttpBodyIssue::Unconfirmed),
-            ),
-            (vec!["0", "0"], 0, Some(HttpBodyIssue::Unconfirmed)),
-            (vec!["0, 0"], 0, Some(HttpBodyIssue::Unconfirmed)),
-            (vec!["7"], 0, Some(HttpBodyIssue::Unconfirmed)),
-            (vec![], 0, Some(HttpBodyIssue::Unconfirmed)),
-        ] {
-            let mut headers = HeaderMap::new();
-            for length in lengths {
-                headers.append(CONTENT_LENGTH, HeaderValue::from_str(length).unwrap());
-            }
-            assert_eq!(upgrade_body_issue(&headers, buffered, 10), expected);
-            headers.insert(TRANSFER_ENCODING, HeaderValue::from_static("chunked"));
-            assert_eq!(
-                upgrade_body_issue(&headers, buffered, 10),
-                Some(HttpBodyIssue::Unconfirmed)
-            );
-        }
-        assert_eq!(
-            upgrade_body_issue(&HeaderMap::new(), 11, 10),
-            Some(HttpBodyIssue::Truncated)
-        );
-    }
 
     #[tokio::test]
     async fn oversized_send_rejects_before_waiting_on_a_full_command_queue() {

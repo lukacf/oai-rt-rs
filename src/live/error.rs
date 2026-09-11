@@ -83,7 +83,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub enum HttpBodyIssue {
     Truncated,
     ReadFailed,
-    /// Only a buffered failed-upgrade tail was available; entity completion was
-    /// not proven from unambiguous HTTP framing.
+    /// A rejected 101 upgrade did not establish a valid WebSocket or a proven
+    /// complete HTTP entity. No second request is made to guess its body.
     Unconfirmed,
 }

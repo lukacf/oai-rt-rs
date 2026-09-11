@@ -1,9 +1,10 @@
 //! Bounded, billable client-delegation probe using a synthetic raw PCM16/24k file.
+mod support;
 use oai_rt_rs::live::{
     ClientEvent, CloseReason, Command, Error, Field, LiveClient, Nullable, Result, ServerEvent,
     SessionConfig,
 };
-use std::{collections::HashSet, time::Duration};
+use std::time::Duration;
 use tokio::time::{Instant, timeout};
 
 fn synthetic_audio() -> Result<Vec<u8>> {
@@ -37,28 +38,26 @@ async fn main() -> Result<()> {
     let sender = connection.sender();
     let audio = tokio::spawn(async move { sender.send_audio_paced(&pcm, 2400).await });
     let mut delegations = 0;
-    let mut acked = HashSet::new();
+    let mut acked = support::Acks::new(&[
+        ("session.thinking.appended", "result-thinking"),
+        ("session.commentary.appended", "result-commentary"),
+    ]);
     let mut input_fragments = 0;
     let mut transcript = String::new();
-    let mut voiced_samples = 0;
+    let mut speech = support::Speech::default();
     let deadline = Instant::now() + Duration::from_secs(22);
     let probe = async {
         loop {
             let frame = timeout(deadline.saturating_duration_since(Instant::now()), connection.next_event())
                 .await.map_err(|_| Error::Timeout)??.ok_or(Error::UnconfirmedClose)?;
-            if let Some(id) = &frame.client_event_id {
-                acked.insert(id.clone());
-            }
+            support::check_frame(&frame)?;
+            acked.observe(&frame);
             if let Some(chunk) = frame.audio(oai_rt_rs::live::ConnectionRole::Primary, oai_rt_rs::live::AudioFormat::default())? {
-                if chunk.bytes.chunks_exact(2)
-                    .any(|b| i16::from_le_bytes([b[0],b[1]]).unsigned_abs() >= 500)
-                {
-                    voiced_samples += chunk.bytes.len() / 2;
-                }
+                speech.add(&chunk.bytes, chunk.format)?;
             }
             match frame.event {
                 ServerEvent::InputTranscriptDelta { .. } => input_fragments += 1,
-                ServerEvent::OutputTranscriptDelta { delta, .. } => transcript.push_str(&delta),
+                ServerEvent::OutputTranscriptDelta { delta, .. } => support::append_text(&mut transcript, &delta)?,
                 ServerEvent::DelegationCreated { delegation, .. } => {
                     if delegation.target != oai_rt_rs::live::DelegationTarget::Client
                         || delegation.response_id.is_some()
@@ -83,8 +82,8 @@ async fn main() -> Result<()> {
                 _ => {}
             }
             if delegations > 0 && input_fragments > 0
-                && acked.contains("result-thinking") && acked.contains("result-commentary")
-                && transcript.contains("The test order is ready for pickup") && voiced_samples >= 4800
+                && acked.complete()
+                && transcript.contains("The test order is ready for pickup") && speech.qualified()
             {
                 return Ok(());
             }
@@ -92,9 +91,7 @@ async fn main() -> Result<()> {
     }.await;
     audio.abort();
     let audio_result = audio.await;
-    let closed = connection
-        .close(Duration::from_secs(10), |_| Ok(()))
-        .await?;
+    let closed = support::close(&mut connection).await?;
     match audio_result {
         Ok(result) => result?,
         Err(error) if error.is_cancelled() => {}
@@ -110,9 +107,10 @@ async fn main() -> Result<()> {
         return Err(Error::UnconfirmedClose);
     };
     println!(
-        "{{\"probe\":\"public-live-client-delegation\",\"delegations\":{delegations},\"input_fragments\":{input_fragments},\"acks\":{},\"voiced_samples\":{voiced_samples},\"result_transcript_matched\":true,\"final_seconds\":{}}}",
-        acked.len(),
-        usage.seconds
+        "{}",
+        serde_json::json!({"probe":"public-live-client-delegation","delegations":delegations,
+        "input_fragments":input_fragments,"acks":acked.count(),"speech":speech.report(),
+        "result_transcript_matched":true,"final_seconds":usage.seconds})
     );
     Ok(())
 }

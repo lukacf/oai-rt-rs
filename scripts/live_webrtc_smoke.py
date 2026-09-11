@@ -1,20 +1,22 @@
 #!/usr/bin/env python3
 """Real-peer smoke for the Rust live_webrtc_smoke example.
 
-Requires aiortc and av. Only silent synthetic input is sent. Raw media,
-SDP, credentials, and transcripts are never persisted or printed.
+Requires aiortc and av. Only synthetic silence is sent. Raw media, SDP,
+credentials, provider IDs and transcripts are never persisted or printed.
 """
 
 import argparse
-import array
 import asyncio
 import json
-import time
 import sys
+import time
 from fractions import Fraction
 
 from aiortc import AudioStreamTrack, RTCConfiguration, RTCPeerConnection, RTCSessionDescription
+from aiortc.mediastreams import MediaStreamError
 from av import AudioFrame
+
+from live_probe_support import PeerEvents, SpeechEvidence, final_usage_report, pcm16_mono, strict_json
 
 
 class Silence(AudioStreamTrack):
@@ -35,18 +37,29 @@ class Silence(AudioStreamTrack):
         return frame
 
 
+def mono_samples(frame):
+    if frame.format.name not in ("s16", "s16p"):
+        raise ValueError("unsupported decoded audio format")
+    return pcm16_mono([bytes(plane) for plane in frame.planes], frame.samples,
+                      len(frame.layout.channels), frame.format.is_planar)
+
+
 async def probe(binary, restrict_browser, fork):
     peer = RTCPeerConnection(RTCConfiguration(iceServers=[]))
     peer.addTrack(Silence())
     channel = peer.createDataChannel("oai-events")
-    opened = asyncio.Event()
-    closed = asyncio.Event()
-    voiced = asyncio.Event()
-    transcript_ready = asyncio.Event()
-    permission_rejected = asyncio.Event()
-    state = {"frames": 0, "voiced_frames": 0, "peak": 0, "transcript": ""}
+    opened, closed, voiced = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    transcript_ready, permission_rejected, failed = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    evidence = PeerEvents(restrict_browser)
+    speech = SpeechEvidence()
+    state = {"frames": 0, "peak": 0, "closing": False}
     tasks = []
     process = None
+    result = {}
+
+    def fail(reason):
+        evidence.fail(reason)
+        failed.set()
 
     @channel.on("open")
     def on_open():
@@ -59,35 +72,33 @@ async def probe(binary, restrict_browser, fork):
 
     @channel.on("message")
     def on_message(message):
-        event = json.loads(message)
-        if event["type"] == "session.output_transcript.delta":
-            state["transcript"] += event["delta"]
-            if "The connection test is ready" in state["transcript"]:
-                transcript_ready.set()
-        elif event["type"] == "session.closed":
+        evidence.observe(message)
+        if evidence.first_error:
+            failed.set()
+        if evidence.closed:
             closed.set()
-        elif event["type"] == "error":
-            error = event["error"]
-            if error.get("code") == "event_not_allowed" and error.get("client_event_id") == "browser-restricted":
-                permission_rejected.set()
+        if evidence.permission_denied:
+            permission_rejected.set()
+        if "The connection test is ready" in evidence.transcript:
+            transcript_ready.set()
 
     async def receive_audio(track):
         while True:
-            frame = await track.recv()
-            if frame.format.name not in ("s16", "s16p"):
-                raise RuntimeError("Expected decoded PCM16 audio from the peer")
-            channels_per_plane = 1 if frame.format.is_planar else len(frame.layout.channels)
-            samples = array.array("h")
-            for plane in frame.planes:
-                samples.frombytes(bytes(plane)[:frame.samples * channels_per_plane * 2])
-            if sys.byteorder != "little":
-                samples.byteswap()
-            peak = max(abs(sample) for sample in samples)
-            state["peak"] = max(state["peak"], peak)
+            try:
+                frame = await track.recv()
+            except MediaStreamError:
+                if not state["closing"] and not evidence.closed:
+                    fail("media ended before close was requested")
+                return
+            try:
+                samples = mono_samples(frame)
+                speech.add(samples, frame.sample_rate)
+            except (ValueError, TypeError):
+                fail("malformed decoded audio")
+                return
+            state["peak"] = max(state["peak"], max((abs(sample) for sample in samples), default=0))
             state["frames"] += 1
-            if peak >= 500:
-                state["voiced_frames"] += 1
-            if state["voiced_frames"] >= 10:
+            if speech.qualified:
                 voiced.set()
 
     @peer.on("track")
@@ -102,56 +113,74 @@ async def probe(binary, restrict_browser, fork):
             binary,
             *(["--restrict-browser"] if restrict_browser else []),
             *(["--fork"] if fork else []),
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
         process.stdin.write((json.dumps({"sdp": peer.localDescription.sdp}) + "\n").encode())
         await process.stdin.drain()
         answer_line = await asyncio.wait_for(process.stdout.readline(), 35)
         if not answer_line:
             raise RuntimeError("Rust signaling failed before returning the SDP answer")
-        answer = json.loads(answer_line)
+        answer = strict_json(answer_line)
         await peer.setRemoteDescription(RTCSessionDescription(sdp=answer["sdp"], type="answer"))
         await asyncio.wait_for(opened.wait(), 15)
         process.stdin.write(b'{"ready":true}\n')
         await process.stdin.drain()
-        await asyncio.wait_for(asyncio.gather(voiced.wait(), transcript_ready.wait()), 25)
+        requirements = [voiced.wait(), transcript_ready.wait()]
         if restrict_browser:
-            await asyncio.wait_for(permission_rejected.wait(), 5)
-        process.stdin.write(b'{"media_verified":true}\n')
+            requirements.append(permission_rejected.wait())
+        media = asyncio.gather(*requirements)
+        failure = asyncio.create_task(failed.wait())
+        done, pending = await asyncio.wait([media, failure], timeout=25,
+                                           return_when=asyncio.FIRST_COMPLETED)
+        verified = media in done and evidence.first_error is None
+        for future in pending:
+            future.cancel()
+        await asyncio.gather(media, failure, return_exceptions=True)
+        if not verified:
+            fail("media, transcript or exact permission evidence did not complete")
+        state["closing"] = True
+        process.stdin.write((json.dumps({"media_verified": verified}) + "\n").encode())
         await process.stdin.drain()
         process.stdin.close()
         await asyncio.wait_for(closed.wait(), 15)
         result_line = await asyncio.wait_for(process.stdout.readline(), 15)
-        result = json.loads(result_line)
         return_code = await asyncio.wait_for(process.wait(), 5)
         if return_code:
-            raise RuntimeError("Rust signaling/control assertions failed")
-        if result.get("sideband_acks") != 2 or not result.get("closed"):
-            raise RuntimeError("Rust sideband did not confirm context ACKs and final usage")
-        result.update(
-            media_frames=state["frames"],
-            voiced_frames=state["voiced_frames"],
-            peak=state["peak"],
-            datachannel_transcript_matched=True,
-            datachannel_closed=True,
-            browser_restriction_verified=restrict_browser and permission_rejected.is_set(),
-        )
-        print(json.dumps(result, sort_keys=True))
+            fail("Rust signaling/control/final-drain assertions failed")
+        if result_line:
+            result = strict_json(result_line)
+        if (not isinstance(result, dict) or result.get("sideband_acks") != 2
+                or result.get("closed") is not True or result.get("created_matches_attached") is not True
+                or fork and result.get("fork_new_id_verified") is not True):
+            fail("Rust did not confirm exact ACKs, session identities and final usage")
     finally:
+        state["closing"] = True
         await peer.close()
         for task in tasks:
             task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        if process is not None and process.returncode is None:
-            process.terminate()
-            try:
-                await asyncio.wait_for(process.wait(), 3)
-            except asyncio.TimeoutError:
-                process.kill()
-                await process.wait()
+        outcomes = await asyncio.gather(*tasks, return_exceptions=True)
+        if any(isinstance(outcome, BaseException) and not isinstance(outcome, asyncio.CancelledError)
+               for outcome in outcomes):
+            fail("media receiver task failed")
+        if process is not None:
+            if process.returncode is None:
+                process.terminate()
+                try:
+                    await asyncio.wait_for(process.wait(), 3)
+                except asyncio.TimeoutError:
+                    process.kill()
+                    await process.wait()
+            stderr = await process.stderr.read(65537)
+            if len(stderr) > 65536:
+                fail("Rust diagnostic byte budget exceeded")
+            receipt = final_usage_report(stderr)
+            if receipt:
+                print(json.dumps(receipt, sort_keys=True), file=sys.stderr)
+    evidence.check()
+    result.update(media_frames=state["frames"], speech=speech.report(), peak=state["peak"],
+                  datachannel_transcript_matched=True, datachannel_closed=evidence.closed,
+                  browser_restriction_verified=restrict_browser and evidence.permission_denied)
+    print(json.dumps(result, sort_keys=True))
 
 
 if __name__ == "__main__":

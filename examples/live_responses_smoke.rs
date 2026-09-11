@@ -1,4 +1,5 @@
 //! Bounded, billable managed function/result/continuation probe against the public API.
+mod support;
 use oai_rt_rs::live::{
     AudioFormat, ClientEvent, Command, ConnectionRole, DelegationConfig, DelegationUpdate, Error,
     Field, FunctionCall, FunctionCallTracker, LiveClient, LiveConnection, NamedToolChoice,
@@ -110,6 +111,7 @@ async fn update_before_work(connection: &mut LiveConnection) -> Result<()> {
                 .next_event()
                 .await?
                 .ok_or(Error::UnconfirmedClose)?;
+            support::check_frame(&frame)?;
             match frame.event {
                 ServerEvent::Updated { .. }
                     if frame.client_event_id.as_deref() == Some("backend-update") =>
@@ -135,7 +137,7 @@ struct Probe {
     update_acked: bool,
     backend_text: String,
     voice_text: String,
-    voiced_samples: usize,
+    speech: support::Speech,
     timeline: Vec<Value>,
 }
 
@@ -253,7 +255,7 @@ impl Probe {
             })
             && self.backend_text.contains("NATIVE_BLUE_SEVEN")
             && self.voice_text.contains("The blue test passed")
-            && self.voiced_samples >= 2400
+            && self.speech.qualified()
     }
 
     fn report(&self, diagnostic: bool) -> Value {
@@ -266,7 +268,7 @@ impl Probe {
             "continuation_terminal":self.continuation.as_ref().and_then(|key| self.tracker.terminal(key)).map(|kind| format!("{kind:?}")),
             "backend_result_matched":self.backend_text.contains("NATIVE_BLUE_SEVEN"),
             "voice_result_matched":self.voice_text.contains("The blue test passed"),
-            "voiced_samples":self.voiced_samples,"sparse_update_acked":self.update_acked,
+            "speech":self.speech.report(),"sparse_update_acked":self.update_acked,
             "update_during_handoff":diagnostic,"call_response_identity_verified":true,
             "cleared_snapshots_verified":true,"timeline":self.timeline,
         })
@@ -301,11 +303,7 @@ async fn observe_frame(
         }
     }
     if let Some(chunk) = frame.audio(ConnectionRole::Primary, AudioFormat::default())? {
-        probe.voiced_samples += chunk
-            .bytes
-            .chunks_exact(2)
-            .filter(|bytes| i16::from_le_bytes([bytes[0], bytes[1]]).unsigned_abs() >= 500)
-            .count();
+        probe.speech.add(&chunk.bytes, chunk.format)?;
     }
     match &frame.event {
         ServerEvent::Updated { .. }
@@ -406,22 +404,8 @@ async fn main() -> Result<()> {
     }
     audio.abort();
     let audio_result = audio.await;
-    let close_result = connection
-        .close_with_events(Duration::from_secs(10), |event| {
-            if let Err(error) = event {
-                eprintln!("probe close event failed: {error}");
-            }
-            Ok(())
-        })
-        .await;
-    if let Ok(frame) = &close_result {
-        if let ServerEvent::Closed { usage, .. } = &frame.event {
-            eprintln!(
-                "{}",
-                json!({"final_usage_confirmed":true,"final_seconds":usage.seconds})
-            );
-        }
-    } else if let Err(error) = &close_result {
+    let close_result = support::close(&mut connection).await;
+    if let Err(error) = &close_result {
         eprintln!("probe finalization failed: {error}");
     }
     match audio_result {

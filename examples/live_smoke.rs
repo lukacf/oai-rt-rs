@@ -1,9 +1,10 @@
 //! Explicit, bounded, billable public Live smoke probe. Run with `OPENAI_API_KEY`.
+mod support;
 use oai_rt_rs::live::{
     AudioFormat, ClientEvent, Command, Error, Field, LiveClient, LiveConnection, Nullable, Result,
     ServerEvent, SessionConfig, decode_audio,
 };
-use std::{collections::HashSet, time::Duration};
+use std::time::Duration;
 use tokio::time::{Instant, timeout};
 
 async fn seed(connection: &LiveConnection) -> Result<()> {
@@ -51,7 +52,6 @@ async fn main() -> Result<()> {
         ..SessionConfig::default()
     };
     let mut connection = client.connect(config).await?;
-    seed(&connection).await?;
     let sender = connection.sender();
     let audio = tokio::spawn(async move {
         sender
@@ -59,11 +59,16 @@ async fn main() -> Result<()> {
             .await
     });
     let deadline = Instant::now() + Duration::from_secs(12);
-    let mut acks = HashSet::new();
+    let mut acks = support::Acks::new(&[
+        ("session.thinking.appended", "thinking-a"),
+        ("session.thinking.appended", "thinking-b"),
+        ("session.commentary.appended", "commentary"),
+    ]);
     let mut audio_chunks = 0;
-    let mut voiced_samples = 0;
+    let mut speech = support::Speech::default();
     let mut transcript = String::new();
     let probe = async {
+        seed(&connection).await?;
         while Instant::now() < deadline {
             let frame = timeout(
                 deadline.saturating_duration_since(Instant::now()),
@@ -72,28 +77,21 @@ async fn main() -> Result<()> {
             .await
             .map_err(|_| Error::Timeout)??
             .ok_or(Error::UnconfirmedClose)?;
-            if let Some(id) = frame.client_event_id {
-                acks.insert(id);
-            }
+            support::check_frame(&frame)?;
+            acks.observe(&frame);
             match frame.event {
                 ServerEvent::OutputAudioDelta { delta, .. } => {
                     let bytes = decode_audio(&delta, AudioFormat::default())?;
                     audio_chunks += 1;
-                    let peak = bytes
-                        .chunks_exact(2)
-                        .map(|b| i16::from_le_bytes([b[0], b[1]]).unsigned_abs())
-                        .max()
-                        .unwrap_or(0);
-                    if peak >= 500 {
-                        voiced_samples += bytes.len() / 2;
-                    }
+                    speech.add(&bytes, AudioFormat::default())?;
                 }
-                ServerEvent::OutputTranscriptDelta { delta, .. } => transcript.push_str(&delta),
+                ServerEvent::OutputTranscriptDelta { delta, .. } => {
+                    support::append_text(&mut transcript, &delta)?;
+                }
                 ServerEvent::Error { error, .. } => return Err(Error::Provider(error)),
                 _ => {}
             }
-            if acks.len() == 3 && voiced_samples >= 2400 && transcript.contains("The test is ready")
-            {
+            if acks.complete() && speech.qualified() && transcript.contains("The test is ready") {
                 break;
             }
         }
@@ -102,16 +100,14 @@ async fn main() -> Result<()> {
     .await;
     audio.abort();
     let audio_result = audio.await;
-    let final_frame = connection
-        .close(Duration::from_secs(10), |_| Ok(()))
-        .await?;
+    let final_frame = support::close(&mut connection).await?;
     match audio_result {
         Ok(result) => result?,
         Err(error) if error.is_cancelled() => {}
         Err(_) => return Err(Error::Transport("audio producer failed".into())),
     }
     probe?;
-    if acks.len() != 3 || voiced_samples < 2400 || !transcript.contains("The test is ready") {
+    if !acks.complete() || !speech.qualified() || !transcript.contains("The test is ready") {
         return Err(Error::Invalid(
             "smoke requires all context ACKs, voiced audio and the expected transcript".into(),
         ));
@@ -120,9 +116,10 @@ async fn main() -> Result<()> {
         return Err(Error::UnconfirmedClose);
     };
     println!(
-        "{{\"probe\":\"public-live-primary\",\"acks\":{},\"audio_chunks\":{audio_chunks},\"voiced_samples\":{voiced_samples},\"transcript_matched\":true,\"final_seconds\":{},\"close_reason\":\"{reason:?}\"}}",
-        acks.len(),
-        usage.seconds
+        "{}",
+        serde_json::json!({"probe":"public-live-primary","acks":acks.count(),
+        "audio_chunks":audio_chunks,"speech":speech.report(),"transcript_matched":true,
+        "final_seconds":usage.seconds,"close_reason":format!("{reason:?}")})
     );
     Ok(())
 }

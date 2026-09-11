@@ -8,7 +8,7 @@ use tokio::{
 };
 
 #[tokio::test]
-async fn split_upgrade_headers_do_not_claim_a_complete_error_body() {
+async fn incomplete_rejection_body_keeps_headers_after_the_body_deadline() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let client = LiveClient::with_options(
         "synthetic",
@@ -16,6 +16,7 @@ async fn split_upgrade_headers_do_not_claim_a_complete_error_body() {
             base_url: format!("http://{}/v1/", listener.local_addr().unwrap())
                 .parse()
                 .unwrap(),
+            request_timeout: Duration::from_millis(100),
             ..ClientOptions::default()
         },
     )
@@ -54,7 +55,7 @@ async fn split_upgrade_headers_do_not_claim_a_complete_error_body() {
             assert_eq!(request_id.as_deref(), Some("req-upgrade"));
             assert_eq!(retry_after.as_deref(), Some("4"));
             assert!(body.is_empty());
-            assert_eq!(body_issue, Some(HttpBodyIssue::Unconfirmed));
+            assert_eq!(body_issue, Some(HttpBodyIssue::ReadFailed));
         }
         other => panic!("lost upgrade HTTP metadata: {other:?}"),
     }
@@ -63,7 +64,7 @@ async fn split_upgrade_headers_do_not_claim_a_complete_error_body() {
 }
 
 #[tokio::test]
-async fn unknown_and_chunked_upgrade_framing_remain_unconfirmed() {
+async fn eof_and_chunked_rejection_bodies_are_read_to_confirmed_completion() {
     for framing in ["", "Transfer-Encoding: chunked\r\n"] {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let client = LiveClient::with_options(
@@ -91,7 +92,7 @@ async fn unknown_and_chunked_upgrade_framing_remain_unconfirmed() {
             error,
             Error::Http {
                 status: 403,
-                body_issue: Some(HttpBodyIssue::Unconfirmed),
+                body_issue: None,
                 ..
             }
         ));
