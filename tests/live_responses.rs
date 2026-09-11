@@ -1129,11 +1129,160 @@ fn malformed_known_input_never_matches_another_variant() {
 }
 
 fn lifecycle(event_type: &str, id: &str) -> Value {
+    let status = match event_type {
+        "response.completed" => "completed",
+        "response.failed" => "failed",
+        "response.incomplete" => "incomplete",
+        "response.queued" => "queued",
+        _ => "in_progress",
+    };
     json!({
         "type":event_type,"sequence_number":0,
         "response":{"id":id,"created_at":1_700_000_000.25,"completed_at":null,
-            "status":"in_progress","output":[],"tools":[],"instructions":null}
+            "status":status,"output":[],"tools":[],"instructions":null}
     })
+}
+
+#[test]
+fn completion_tracker_checks_present_status_and_preserves_uncertainty() {
+    for kind in [
+        "response.created",
+        "response.in_progress",
+        "response.queued",
+        "response.completed",
+        "response.failed",
+        "response.incomplete",
+    ] {
+        for status in [
+            "completed",
+            "failed",
+            "in_progress",
+            "cancelled",
+            "queued",
+            "incomplete",
+        ] {
+            let mut tracker = FunctionCallTracker::default();
+            let key = track_lifecycle(&mut tracker, Some("d"), "response.created", "r");
+            tracker
+                .observe(
+                    Some("d"),
+                    &ResponseEvent::decode(finished_call("c")).unwrap(),
+                )
+                .unwrap();
+            let mut wire = lifecycle(kind, "r");
+            wire["response"]["status"] = json!(status);
+            let consistent = match kind {
+                "response.created" => matches!(status, "in_progress" | "queued"),
+                "response.in_progress" => status == "in_progress",
+                "response.queued" => status == "queued",
+                "response.completed" => status == "completed",
+                "response.failed" => status == "failed",
+                "response.incomplete" => status == "incomplete",
+                _ => unreachable!(),
+            };
+            let event = ResponseEvent::decode(wire.clone()).unwrap();
+            assert_eq!(
+                tracker.observe(Some("d"), &event).is_ok(),
+                consistent,
+                "{kind}/{status}"
+            );
+            if !consistent {
+                assert!(tracker.ready_calls(&key).is_none());
+                assert!(tracker.terminal(&key).is_none());
+                assert_eq!(
+                    tracker.calls(&key).unwrap().len(),
+                    1,
+                    "contradictions must not erase collected calls"
+                );
+                track_lifecycle(&mut tracker, Some("d"), "response.completed", "r");
+                assert!(
+                    tracker.ready_calls(&key).is_none(),
+                    "contradiction is sticky"
+                );
+                let ResponseEvent::Lifecycle { response, .. } = event else {
+                    panic!("lifecycle")
+                };
+                assert!(
+                    response.status.is_some(),
+                    "caller retains contradictory evidence"
+                );
+            }
+        }
+        let mut tracker = FunctionCallTracker::default();
+        let mut wire = lifecycle(kind, "r");
+        wire["response"].as_object_mut().unwrap().remove("status");
+        tracker
+            .observe(Some("d"), &ResponseEvent::decode(wire).unwrap())
+            .unwrap();
+    }
+}
+
+#[test]
+fn completion_tracker_granular_facts_require_item_done_and_retain_optional_ids() {
+    let arguments = json!({"type":"response.function_call_arguments.done","sequence_number":1,
+        "output_index":0,"item_id":"item_1","arguments":"{}"});
+    let mut tracker = FunctionCallTracker::default();
+    let key = track_lifecycle(&mut tracker, Some("d"), "response.created", "r");
+    tracker
+        .observe(
+            Some("d"),
+            &ResponseEvent::decode(arguments.clone()).unwrap(),
+        )
+        .unwrap();
+    track_lifecycle(&mut tracker, Some("d"), "response.completed", "r");
+    assert!(
+        tracker.ready_calls(&key).is_none(),
+        "arguments.done does not finish a function item"
+    );
+
+    let mut tracker = FunctionCallTracker::default();
+    let key = track_lifecycle(&mut tracker, Some("d"), "response.created", "r");
+    tracker
+        .observe(
+            Some("d"),
+            &ResponseEvent::decode(arguments.clone()).unwrap(),
+        )
+        .unwrap();
+    track_lifecycle(&mut tracker, Some("d"), "response.created", "r2");
+    assert_eq!(
+        tracker
+            .observe(
+                Some("d"),
+                &ResponseEvent::decode(finished_call("c")).unwrap()
+            )
+            .unwrap(),
+        ResponseAttribution::Owned(key.clone()),
+        "granular item binding survives a second open response"
+    );
+    track_lifecycle(&mut tracker, Some("d"), "response.completed", "r");
+    assert_eq!(tracker.ready_calls(&key).unwrap().len(), 1);
+
+    let mut tracker = FunctionCallTracker::default();
+    let key = track_lifecycle(&mut tracker, Some("d"), "response.created", "r");
+    let mut added = finished_call("c");
+    added["type"] = json!("response.output_item.added");
+    added["item"]["status"] = json!("in_progress");
+    tracker
+        .observe(Some("d"), &ResponseEvent::decode(added).unwrap())
+        .unwrap();
+    let mut done = finished_call("c");
+    done["item"].as_object_mut().unwrap().remove("id");
+    tracker
+        .observe(Some("d"), &ResponseEvent::decode(done).unwrap())
+        .unwrap();
+    track_lifecycle(&mut tracker, Some("d"), "response.completed", "r");
+    assert_eq!(tracker.ready_calls(&key).unwrap().len(), 1);
+    assert!(
+        tracker.calls(&key).unwrap()[0].id.is_none(),
+        "do not invent a missing wire field"
+    );
+    track_lifecycle(&mut tracker, Some("d"), "response.created", "r2");
+    assert!(
+        tracker
+            .observe(Some("d"), &ResponseEvent::decode(arguments).unwrap())
+            .is_err(),
+        "late arguments must stay bound to the finished r1, not move to r2"
+    );
 }
 
 fn finished_call(call_id: &str) -> Value {

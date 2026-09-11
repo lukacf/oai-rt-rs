@@ -2,7 +2,10 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::de::{MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
-use std::fmt;
+use std::{
+    fmt,
+    io::{self, Write},
+};
 
 use super::{
     AudioFormat, ClientConfig, ClientEvent, Command, DelegationConfig, DelegationUpdate, Error,
@@ -32,9 +35,8 @@ impl Codec {
     /// # Errors
     /// Rejects invalid overrides, correlation IDs, or an oversized frame.
     pub fn encode_fork_start(&self, event: &super::ForkStartEvent) -> Result<String> {
+        let text = self.encode_bounded(event)?;
         event.validate()?;
-        let text = serde_json::to_string(event)?;
-        self.check_size(&text)?;
         Ok(text)
     }
 
@@ -52,12 +54,20 @@ impl Codec {
     /// # Errors
     /// Rejects invalid configuration, audio, or a frame exceeding the local limit.
     pub fn encode(&self, event: &ClientEvent) -> Result<String> {
+        let text = self.encode_bounded(event)?;
         event.validate()?;
-        let text = serde_json::to_string(event)?;
-        if text.len() > self.max_event_bytes {
+        Ok(text)
+    }
+
+    fn encode_bounded(self, value: &impl Serialize) -> Result<String> {
+        let mut output = BoundedJson::new(self.max_event_bytes);
+        let result = serde_json::to_writer(&mut output, value);
+        if output.exceeded {
             return Err(Error::Invalid("event exceeds configured byte limit".into()));
         }
-        Ok(text)
+        result?;
+        String::from_utf8(output.bytes)
+            .map_err(|_| Error::Invalid("JSON serializer produced invalid UTF-8".into()))
     }
 
     /// Strictly decode outgoing JSON; unknown fields and duplicate keys are errors.
@@ -99,6 +109,46 @@ impl Codec {
         } else {
             Ok(())
         }
+    }
+}
+
+struct BoundedJson {
+    bytes: Vec<u8>,
+    limit: usize,
+    exceeded: bool,
+}
+
+impl BoundedJson {
+    const fn new(limit: usize) -> Self {
+        Self {
+            bytes: Vec::new(),
+            limit,
+            exceeded: false,
+        }
+    }
+}
+
+impl Write for BoundedJson {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if bytes.len() > self.limit.saturating_sub(self.bytes.len()) {
+            self.exceeded = true;
+            return Err(io::Error::other("event exceeds configured byte limit"));
+        }
+        let required = self.bytes.len() + bytes.len();
+        if required > self.bytes.capacity() {
+            let capacity = required
+                .max(self.bytes.capacity().saturating_mul(2))
+                .min(self.limit);
+            self.bytes
+                .try_reserve_exact(capacity - self.bytes.len())
+                .map_err(|_| io::Error::other("cannot allocate bounded event buffer"))?;
+        }
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
     }
 }
 
@@ -516,5 +566,78 @@ impl<'de> Deserialize<'de> for UniqueValue {
             }
         }
         deserializer.deserialize_any(UniqueVisitor)
+    }
+}
+
+#[cfg(test)]
+mod bounded_encoding_tests {
+    use super::*;
+
+    #[test]
+    fn serialized_buffer_allocation_never_exceeds_the_wire_budget() {
+        for content in ["x".repeat(128 * 1024), "\n".repeat(128 * 1024)] {
+            let event = ClientEvent::new(Command::ThinkingAppend {
+                content,
+                delegation_id: super::super::Nullable(None),
+            });
+            let mut output = BoundedJson::new(512);
+            assert!(serde_json::to_writer(&mut output, &event).is_err());
+            assert!(output.exceeded);
+            assert!(output.bytes.len() <= 512);
+            assert!(
+                output.bytes.capacity() <= 512,
+                "serializer must not reserve the full oversized payload"
+            );
+            assert!(matches!(
+                Codec {
+                    max_event_bytes: 512
+                }
+                .encode(&event),
+                Err(Error::Invalid(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn byte_limit_includes_escaping_and_is_inclusive() {
+        let event = ClientEvent::new(Command::ThinkingAppend {
+            content: "é\n\"".into(),
+            delegation_id: super::super::Nullable(None),
+        });
+        let expected = serde_json::to_string(&event).unwrap();
+        assert_eq!(
+            Codec {
+                max_event_bytes: expected.len()
+            }
+            .encode(&event)
+            .unwrap(),
+            expected
+        );
+        for limit in [0, expected.len() - 1] {
+            assert!(matches!(
+                Codec {
+                    max_event_bytes: limit
+                }
+                .encode(&event),
+                Err(Error::Invalid(_))
+            ));
+        }
+        let fork = super::super::ForkStartEvent::new(super::super::ForkSessionConfig::default());
+        let expected = serde_json::to_string(&fork).unwrap();
+        assert_eq!(
+            Codec {
+                max_event_bytes: expected.len()
+            }
+            .encode_fork_start(&fork)
+            .unwrap(),
+            expected
+        );
+        assert!(
+            Codec {
+                max_event_bytes: expected.len() - 1
+            }
+            .encode_fork_start(&fork)
+            .is_err()
+        );
     }
 }

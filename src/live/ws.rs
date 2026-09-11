@@ -23,8 +23,12 @@ use super::{
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
+#[derive(Clone, Copy)]
 enum Startup {
-    New(Box<SessionConfig>),
+    New {
+        format: AudioFormat,
+        responses_mode: bool,
+    },
     Fork(AudioFormat),
     Attached,
 }
@@ -52,8 +56,41 @@ pub enum SessionPhase {
 }
 
 struct WriteRequest {
-    event: ClientEvent,
+    text: String,
+    guard: CommandGuard,
     completion: oneshot::Sender<Result<()>>,
+}
+
+enum CommandGuard {
+    Start,
+    Audio,
+    Responses,
+    Update(Option<bool>),
+    Context { attributed: bool },
+    Close,
+    Other,
+}
+
+impl CommandGuard {
+    const fn from_command(command: &Command) -> Self {
+        match command {
+            Command::Start { .. } => Self::Start,
+            Command::InputAudioAppend { .. } => Self::Audio,
+            Command::ResponseItemCreate { .. } | Command::ResponseCreate => Self::Responses,
+            Command::Update { session } => Self::Update(match &session.delegation {
+                Field::Absent => None,
+                Field::Value(DelegationUpdate::Responses { .. }) => Some(true),
+                Field::Value(DelegationUpdate::Client) | Field::Null => Some(false),
+            }),
+            Command::InstructionsAppend { delegation_id, .. }
+            | Command::ThinkingAppend { delegation_id, .. }
+            | Command::CommentaryAppend { delegation_id, .. } => Self::Context {
+                attributed: delegation_id.0.is_some(),
+            },
+            Command::Close => Self::Close,
+            _ => Self::Other,
+        }
+    }
 }
 
 /// A bounded full-duplex connection. The driver keeps receiving while commands
@@ -74,6 +111,7 @@ pub struct LiveSender {
     phase: watch::Receiver<SessionPhase>,
     role: ConnectionRole,
     format: AudioFormat,
+    codec: Codec,
 }
 
 /// Sole event receiver. Dropping it aborts the driver and releases the socket.
@@ -101,13 +139,23 @@ impl LiveClient {
     /// # Errors
     /// Returns startup/provider/handshake errors or a bounded startup timeout.
     pub async fn connect(&self, session: SessionConfig) -> Result<LiveConnection> {
-        session.validate()?;
+        let startup = Startup::New {
+            format: session.audio_format(),
+            responses_mode: matches!(
+                session.delegation,
+                Field::Value(DelegationConfig::Responses { .. })
+            ),
+        };
+        let text = self
+            .options
+            .codec
+            .encode(&ClientEvent::new(Command::Start { session }))?;
         let socket = self.open_socket(&["live", "sessions"]).await?;
-        let event = ClientEvent::new(Command::Start {
-            session: session.clone(),
-        });
-        let connection = self.spawn(socket, Startup::New(Box::new(session)));
-        connection.sender.send(event).await?;
+        let connection = self.spawn(socket, startup);
+        connection
+            .sender
+            .send_prepared(text, CommandGuard::Start)
+            .await?;
         self.wait_started(connection).await
     }
 
@@ -274,11 +322,11 @@ impl LiveClient {
     }
 
     fn spawn(&self, socket: Socket, startup: Startup) -> LiveConnection {
-        let (role, config, format, started_sent) = match startup {
-            Startup::New(config) => {
-                let format = config.audio_format();
-                (ConnectionRole::Primary, Some(*config), format, false)
-            }
+        let (role, responses_mode, format, started_sent) = match startup {
+            Startup::New {
+                format,
+                responses_mode,
+            } => (ConnectionRole::Primary, Some(responses_mode), format, false),
             Startup::Fork(format) => (ConnectionRole::Primary, None, format, true),
             Startup::Attached => (ConnectionRole::Sideband, None, AudioFormat::default(), true),
         };
@@ -292,11 +340,9 @@ impl LiveClient {
         let (phase_tx, phase) = watch::channel(initial);
         let state = DriverState {
             role,
-            config,
-            format,
+            responses_mode,
             phase: phase_tx.clone(),
             started_sent,
-            delegation_target: None,
         };
         let driver = tokio::spawn(run_driver(
             socket,
@@ -312,6 +358,7 @@ impl LiveClient {
                 phase,
                 role,
                 format,
+                codec: self.options.codec,
             },
             receiver: LiveReceiver {
                 events: incoming,
@@ -435,7 +482,16 @@ impl LiveSender {
     /// # Errors
     /// Returns validation, lifecycle, or ambiguous write errors. No retry occurs.
     pub async fn send(&self, event: ClientEvent) -> Result<()> {
-        event.validate()?;
+        let text = self.codec.encode(&event)?;
+        if let Command::InputAudioAppend { audio } = &event.command {
+            decode_audio(audio, self.format)?;
+        }
+        let guard = CommandGuard::from_command(&event.command);
+        drop(event);
+        self.send_prepared(text, guard).await
+    }
+
+    async fn send_prepared(&self, text: String, guard: CommandGuard) -> Result<()> {
         if matches!(
             self.phase(),
             SessionPhase::Closing | SessionPhase::Closed | SessionPhase::Disconnected
@@ -444,7 +500,11 @@ impl LiveSender {
         }
         let (completion, result) = oneshot::channel();
         self.commands
-            .send(WriteRequest { event, completion })
+            .send(WriteRequest {
+                text,
+                guard,
+                completion,
+            })
             .await
             .map_err(|_| Error::Closed)?;
         result.await.unwrap_or(Err(Error::AmbiguousWrite))
@@ -504,15 +564,13 @@ impl LiveReceiver {
 
 struct DriverState {
     role: ConnectionRole,
-    config: Option<SessionConfig>,
-    format: AudioFormat,
+    responses_mode: Option<bool>,
     phase: watch::Sender<SessionPhase>,
     started_sent: bool,
-    delegation_target: Option<DelegationTarget>,
 }
 
 impl DriverState {
-    fn validate(&self, command: &Command) -> Result<()> {
+    fn validate(&self, command: &CommandGuard) -> Result<()> {
         let phase = *self.phase.borrow();
         if matches!(
             phase,
@@ -520,7 +578,7 @@ impl DriverState {
         ) {
             return Err(Error::Closed);
         }
-        if matches!(command, Command::Start { .. }) {
+        if matches!(command, CommandGuard::Start) {
             if self.role != ConnectionRole::Primary || self.started_sent {
                 return Err(Error::Invalid(
                     "session.start is primary-only and once-only".into(),
@@ -531,36 +589,16 @@ impl DriverState {
                 "wait for session.started before application commands".into(),
             ));
         }
-        if let Command::InputAudioAppend { audio } = command {
-            if self.role != ConnectionRole::Primary {
-                return Err(Error::Invalid("sideband cannot send input audio".into()));
-            }
-            decode_audio(audio, self.format)?;
+        if matches!(command, CommandGuard::Audio) && self.role != ConnectionRole::Primary {
+            return Err(Error::Invalid("sideband cannot send input audio".into()));
         }
-        if matches!(
-            command,
-            Command::ResponseItemCreate { .. } | Command::ResponseCreate
-        ) && self.config.as_ref().is_some_and(|config| {
-            !matches!(
-                config.delegation,
-                Field::Value(DelegationConfig::Responses { .. })
-            )
-        }) {
+        if matches!(command, CommandGuard::Responses) && self.responses_mode == Some(false) {
             return Err(Error::Invalid(
                 "Responses commands require Responses delegation".into(),
             ));
         }
-        if let Command::Update { session } = command {
-            if let Some(config) = &self.config {
-                let responses_mode = matches!(
-                    config.delegation,
-                    Field::Value(DelegationConfig::Responses { .. })
-                );
-                let requested_mode = match session.delegation {
-                    Field::Absent => None,
-                    Field::Value(DelegationUpdate::Responses { .. }) => Some(true),
-                    Field::Value(DelegationUpdate::Client) | Field::Null => Some(false),
-                };
+        if let CommandGuard::Update(requested_mode) = command {
+            if let Some(responses_mode) = self.responses_mode {
                 if requested_mode.is_some_and(|mode| mode != responses_mode) {
                     return Err(Error::Invalid(
                         "delegation mode is immutable; null selects client".into(),
@@ -568,50 +606,36 @@ impl DriverState {
                 }
             }
         }
-        match command {
-            Command::InstructionsAppend { delegation_id, .. }
-            | Command::ThinkingAppend { delegation_id, .. }
-            | Command::CommentaryAppend { delegation_id, .. }
-                if delegation_id.0.is_some()
-                    && (self.delegation_target == Some(DelegationTarget::Responses)
-                        || self.config.as_ref().is_some_and(|config| {
-                            matches!(
-                                config.delegation,
-                                Field::Value(DelegationConfig::Responses { .. })
-                            )
-                        })) =>
-            {
-                return Err(Error::Invalid(
-                    "context requires a client delegation, not a Responses delegation".into(),
-                ));
-            }
-            _ => {}
+        if matches!(command, CommandGuard::Context { attributed: true })
+            && self.responses_mode == Some(true)
+        {
+            return Err(Error::Invalid(
+                "context requires a client delegation, not a Responses delegation".into(),
+            ));
         }
         Ok(())
     }
 
-    fn prepare(&mut self, event: &ClientEvent, codec: Codec) -> Result<String> {
-        self.validate(&event.command)?;
-        let text = codec.encode(event)?;
-        if matches!(event.command, Command::Start { .. }) {
+    fn prepare(&mut self, guard: &CommandGuard) -> Result<()> {
+        self.validate(guard)?;
+        if matches!(guard, CommandGuard::Start) {
             self.started_sent = true;
         }
-        if matches!(event.command, Command::Close) {
+        if matches!(guard, CommandGuard::Close) {
             self.phase.send_replace(SessionPhase::Closing);
         }
-        Ok(text)
+        Ok(())
     }
 
     fn observe(&mut self, frame: &ServerFrame) -> bool {
         let startup_error = *self.phase.borrow() == SessionPhase::Starting
             && matches!(frame.event, ServerEvent::Error { .. });
         if let ServerEvent::Started { session, .. } = &frame.event {
-            if self.config.is_none() && !session.delegation.is_absent() {
-                self.config = Some(SessionConfig {
-                    model: session.model.clone(),
-                    delegation: session.delegation.clone(),
-                    ..SessionConfig::default()
-                });
+            if self.responses_mode.is_none() && !session.delegation.is_absent() {
+                self.responses_mode = Some(matches!(
+                    session.delegation,
+                    Field::Value(DelegationConfig::Responses { .. })
+                ));
             }
         }
         match &frame.event {
@@ -623,7 +647,8 @@ impl DriverState {
             }
             ServerEvent::DelegationCreated { delegation, .. } => {
                 // Delegation mode is immutable; no per-ID history is needed.
-                self.delegation_target.get_or_insert(delegation.target);
+                self.responses_mode
+                    .get_or_insert(delegation.target == DelegationTarget::Responses);
             }
             _ => {}
         }
@@ -755,11 +780,11 @@ async fn run_driver(
             request = requests.recv(), if commands_open && !terminal && writing.is_none() => {
                 let Some(request) = request else { commands_open = false; continue };
                 if request.completion.is_closed() { continue; }
-                let text = match state.prepare(&request.event, codec) {
-                    Ok(text) => text,
-                    Err(error) => { let _ = request.completion.send(Err(error)); continue; }
-                };
-                writing = Some(begin_write(writer.take().expect("idle writer"), Some(text), write_timeout, Some(request.completion)));
+                if let Err(error) = state.prepare(&request.guard) {
+                    let _ = request.completion.send(Err(error));
+                    continue;
+                }
+                writing = Some(begin_write(writer.take().expect("idle writer"), Some(request.text), write_timeout, Some(request.completion)));
             }
             message = reader.next(), if pending.is_empty() && !terminal => {
                 match message {
@@ -846,5 +871,89 @@ mod framing_tests {
             upgrade_body_issue(&HeaderMap::new(), 11, 10),
             Some(HttpBodyIssue::Truncated)
         );
+    }
+
+    #[tokio::test]
+    async fn oversized_send_rejects_before_waiting_on_a_full_command_queue() {
+        let (commands, mut requests) = mpsc::channel(1);
+        let (_phase_tx, phase) = watch::channel(SessionPhase::Active);
+        let sender = LiveSender {
+            commands,
+            phase,
+            role: ConnectionRole::Primary,
+            format: AudioFormat::default(),
+            codec: Codec {
+                max_event_bytes: 512,
+            },
+        };
+        let (completion, _receipt) = oneshot::channel();
+        sender
+            .commands
+            .send(WriteRequest {
+                text: "{}".into(),
+                guard: CommandGuard::Other,
+                completion,
+            })
+            .await
+            .unwrap();
+        assert_eq!(sender.commands.capacity(), 0);
+        let mut oversized = Box::pin(sender.send(ClientEvent::new(Command::ThinkingAppend {
+            content: "x".repeat(128 * 1024),
+            delegation_id: super::super::Nullable(None),
+        })));
+        assert!(matches!(
+            futures::poll!(&mut oversized),
+            std::task::Poll::Ready(Err(Error::Invalid(_)))
+        ));
+        assert_eq!(
+            sender.commands.capacity(),
+            0,
+            "oversized command must not enter the queue"
+        );
+        let mut valid = Box::pin(sender.send(ClientEvent::new(Command::ThinkingAppend {
+            content: "valid".into(),
+            delegation_id: super::super::Nullable(None),
+        })));
+        assert!(futures::poll!(&mut valid).is_pending());
+        requests.recv().await.unwrap();
+        assert!(futures::poll!(&mut valid).is_pending());
+        let queued = requests.recv().await.unwrap();
+        assert!(queued.text.len() <= 512);
+        assert!(queued.text.capacity() <= 512);
+        assert!(matches!(
+            queued.guard,
+            CommandGuard::Context { attributed: false }
+        ));
+        queued.completion.send(Ok(())).unwrap();
+        valid.await.unwrap();
+    }
+
+    #[test]
+    fn queued_guards_use_latest_mode_and_phase_at_dequeue() {
+        let (phase, _receiver) = watch::channel(SessionPhase::Active);
+        let mut state = DriverState {
+            role: ConnectionRole::Sideband,
+            responses_mode: None,
+            phase,
+            started_sent: true,
+        };
+        let guard = CommandGuard::Responses;
+        state.validate(&guard).unwrap();
+        let frame = Codec::default()
+            .decode_server(
+                r#"{
+            "type":"session.started","event_id":"e","session":{
+                "id":"s","model":"gpt-live-1","status":"active","expires_at":1,"delegation":null
+            }
+        }"#,
+            )
+            .unwrap();
+        state.observe(&frame);
+        assert!(matches!(state.prepare(&guard), Err(Error::Invalid(_))));
+        state.phase.send_replace(SessionPhase::Closing);
+        assert!(matches!(
+            state.prepare(&CommandGuard::Other),
+            Err(Error::Closed)
+        ));
     }
 }

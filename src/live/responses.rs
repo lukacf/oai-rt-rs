@@ -1408,6 +1408,22 @@ pub enum ResponseLifecycleKind {
     Queued,
 }
 
+impl ResponseLifecycleKind {
+    const fn matches_status(self, status: ResponseLifecycleStatus) -> bool {
+        matches!(
+            (self, status),
+            (
+                Self::Created,
+                ResponseLifecycleStatus::InProgress | ResponseLifecycleStatus::Queued
+            ) | (Self::InProgress, ResponseLifecycleStatus::InProgress)
+                | (Self::Queued, ResponseLifecycleStatus::Queued)
+                | (Self::Completed, ResponseLifecycleStatus::Completed)
+                | (Self::Failed, ResponseLifecycleStatus::Failed)
+                | (Self::Incomplete, ResponseLifecycleStatus::Incomplete)
+        )
+    }
+}
+
 /// A streaming token probability. Unknown inbound fields are ignored.
 #[derive(Clone, PartialEq, Deserialize)]
 pub struct ResponseStreamLogprob {
@@ -1693,7 +1709,8 @@ redacted_debug!(ResponseAttribution);
 
 #[derive(Clone, PartialEq, Eq)]
 struct TrackedOutput {
-    item: ResponseEventItem,
+    id: Option<String>,
+    item: Option<ResponseEventItem>,
     done: bool,
 }
 
@@ -1786,6 +1803,13 @@ impl FunctionCallTracker {
                 response_id: response.id.clone(),
             };
             let state = self.responses.entry(key.clone()).or_default();
+            if response
+                .status
+                .is_some_and(|status| !kind.matches_status(status))
+            {
+                state.uncertain = true;
+                return Err("lifecycle event contradicts its response status".into());
+            }
             let terminal = matches!(
                 kind,
                 ResponseLifecycleKind::Completed
@@ -1847,10 +1871,10 @@ impl FunctionCallTracker {
                 state.items.values().any(|output| {
                     event
                         .item_id()
-                        .is_some_and(|id| output.item.id() == Some(id))
-                        || event
-                            .call_id()
-                            .is_some_and(|id| output.item.call_id() == Some(id))
+                        .is_some_and(|id| output.id.as_deref() == Some(id))
+                        || event.call_id().is_some_and(|id| {
+                            output.item.as_ref().and_then(ResponseEventItem::call_id) == Some(id)
+                        })
                 })
             })
             .map(|(key, _)| key.clone())
@@ -1868,22 +1892,37 @@ impl FunctionCallTracker {
         let (index, item, done) = match event {
             ResponseEvent::OutputItemAdded {
                 output_index, item, ..
-            } => (*output_index, item, false),
+            } => (*output_index, Some(item), false),
             ResponseEvent::OutputItemDone {
                 output_index, item, ..
-            } => (*output_index, item, true),
+            } => (*output_index, Some(item), true),
+            ResponseEvent::FunctionCallArgumentsDelta { output_index, .. }
+            | ResponseEvent::FunctionCallArgumentsDone { output_index, .. }
+            | ResponseEvent::OutputTextDelta { output_index, .. }
+            | ResponseEvent::OutputTextDone { output_index, .. } => (*output_index, None, false),
             _ => return Ok(()),
         };
+        let mut id = event.item_id().map(str::to_owned);
         if let Some(previous) = state.items.get(&index) {
             if previous.done {
-                return if done && &previous.item == item {
+                return if done && previous.item.as_ref() == item {
                     Ok(())
                 } else {
                     Err("conflicting output item after output_item.done".into())
                 };
             }
-            if previous.item.id() != item.id() || previous.item.call_id() != item.call_id() {
+            let conflicting_id = id
+                .as_ref()
+                .zip(previous.id.as_ref())
+                .is_some_and(|(a, b)| a != b);
+            let conflicting_call = item
+                .zip(previous.item.as_ref())
+                .is_some_and(|(a, b)| a.call_id() != b.call_id());
+            if conflicting_id || conflicting_call {
                 return Err("conflicting output identities at the same output_index".into());
+            }
+            if id.is_none() {
+                id.clone_from(&previous.id);
             }
         }
         if state.terminal.is_some() {
@@ -1891,23 +1930,28 @@ impl FunctionCallTracker {
         }
         if state.items.iter().any(|(other_index, output)| {
             *other_index != index
-                && (item.id().is_some_and(|id| output.item.id() == Some(id))
-                    || item
-                        .call_id()
-                        .is_some_and(|id| output.item.call_id() == Some(id)))
+                && (id
+                    .as_deref()
+                    .is_some_and(|id| output.id.as_deref() == Some(id))
+                    || event.call_id().is_some_and(|id| {
+                        output.item.as_ref().and_then(ResponseEventItem::call_id) == Some(id)
+                    }))
         }) {
             return Err("duplicate output identity at different output indices".into());
         }
         if let Some(call) = event.completed_function_call() {
             state.calls.push(call.clone());
         }
-        state.items.insert(
-            index,
-            TrackedOutput {
-                item: item.clone(),
-                done,
-            },
-        );
+        let output = state.items.entry(index).or_insert(TrackedOutput {
+            id: None,
+            item: None,
+            done: false,
+        });
+        output.id = id;
+        if let Some(item) = item {
+            output.item = Some(item.clone());
+        }
+        output.done = done;
         Ok(())
     }
 
@@ -1943,10 +1987,11 @@ impl FunctionCallTracker {
             && state.items.values().all(|output| {
                 output.done
                     && match &output.item {
-                        ResponseEventItem::FunctionCall(call) => {
+                        Some(ResponseEventItem::FunctionCall(call)) => {
                             matches!(call.status, None | Some(ResponseMessageStatus::Completed))
                         }
-                        ResponseEventItem::Other { .. } => true,
+                        Some(ResponseEventItem::Other { .. }) => true,
+                        None => false,
                     }
             }))
         .then_some(state.calls.as_slice())

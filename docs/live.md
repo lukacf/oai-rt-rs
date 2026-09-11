@@ -154,6 +154,14 @@ Queues are bounded. A single driver owns the wire order and continues servicing
 commands under event backpressure. No success acknowledgment is awaited for
 audio append or backend item creation.
 
+Each command is serialized into a byte-budgeted buffer **before queue admission**;
+oversized input is rejected even when the writer and command queue are blocked.
+Only the bounded wire string and small validation metadata enter the queue,
+not a second retained copy of the original command. Serialization itself stops
+at the byte budget, including JSON escaping. The driver rechecks current session
+mode and lifecycle when dequeuing; a prequeue check never substitutes for that
+race-sensitive validation. The byte budget is not a guessed 500-token limit.
+
 Send completion confirms a transport write, not provider acceptance or exactly-once
 delivery. Cancelling a send after enqueueing may race with a write. An I/O failure
 during writing returns `AmbiguousWrite`; **do not blindly retry**. Event IDs are
@@ -293,6 +301,13 @@ unresolved ownership and stream loss never become ready. Call `mark_uncertain`
 after a dropped/malformed event. Retain errors and explicit unfinished state;
 remove tracked responses only when late events no longer need their bindings.
 The helper neither executes functions nor sends continuations.
+
+When a lifecycle snapshot supplies `status`, it must agree with its event kind;
+contradictions preserve collected facts but permanently invalidate that response's
+ready barrier. Omitted status remains supported. Argument/text events establish
+unfinished item facts even without an earlier item-added event; arguments-done
+or text-done alone cannot finish an output item. Known item bindings remain intact
+when a later done item omits its optional ID.
 
 Submit all pending function results with `response.item.create`, then explicitly
 send `response.create`. Item creation has no standalone success ACK and does not
