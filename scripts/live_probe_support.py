@@ -106,9 +106,14 @@ class PeerEvents:
             if not isinstance(event, dict) or not isinstance(event.get("type"), str):
                 raise ValueError("missing event discriminator")
             kind = event["type"]
+            if kind in {"error", "session.output_transcript.delta", "session.closed", "response.event"}:
+                if not isinstance(event.get("event_id"), str):
+                    raise ValueError("missing event identity")
             if kind == "error":
                 error = event.get("error")
-                if not isinstance(error, dict):
+                if (not isinstance(error, dict) or not isinstance(error.get("message"), str)
+                        or not isinstance(error.get("type"), str) or "code" not in error
+                        or error["code"] is not None and not isinstance(error["code"], str)):
                     raise ValueError("malformed provider error")
                 expected = (self.restricted
                             and error.get("type") == "invalid_request_error"
@@ -118,6 +123,8 @@ class PeerEvents:
                     self.permission_denied = True
                 else:
                     self.fail("unexpected data-channel provider error")
+            elif kind == "transport.failed":
+                self.fail("data-channel transport reported failure")
             elif kind == "session.output_transcript.delta":
                 if (not isinstance(event.get("delta"), str)
                         or not all(number(event.get(field)) for field in ("start_ms", "end_ms"))):

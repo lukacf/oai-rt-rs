@@ -9,6 +9,9 @@ pub fn check_frame(frame: &ServerFrame) -> Result<()> {
 }
 
 pub fn check_frame_for(frame: &ServerFrame, browser_denial_expected: bool) -> Result<()> {
+    if matches!(frame.event, ServerEvent::TransportFailed { .. }) {
+        return Err(Error::Transport("probe transport reported failure".into()));
+    }
     if let ServerEvent::Error { error, .. } = &frame.event {
         if browser_denial_expected
             && error.error_type == "invalid_request_error"

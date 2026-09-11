@@ -42,31 +42,39 @@ class EvidenceTests(unittest.TestCase):
 
     def test_only_exact_correlated_permission_denial_is_expected(self):
         error = {"type": "invalid_request_error", "code": "event_not_allowed",
-                 "client_event_id": "browser-restricted"}
+                 "client_event_id": "browser-restricted", "message": "synthetic denial"}
         events = PeerEvents(True)
-        events.observe(json.dumps({"type": "error", "error": error}))
+        events.observe(json.dumps({"type": "error", "event_id": "e", "error": error}))
         self.assertTrue(events.permission_denied)
         events.check()
-        for field in error:
+        for field in ("type", "code", "client_event_id"):
             changed = dict(error, **{field: "unrelated"})
             events = PeerEvents(True)
-            events.observe(json.dumps({"type": "error", "error": changed}))
+            events.observe(json.dumps({"type": "error", "event_id": "e", "error": changed}))
             with self.assertRaises(RuntimeError):
                 events.check()
         events = PeerEvents(False)
-        events.observe(json.dumps({"type": "error", "error": error}))
+        events.observe(json.dumps({"type": "error", "event_id": "e", "error": error}))
         with self.assertRaises(RuntimeError):
             events.check()
+        for missing in ("message", "type", "code", "client_event_id"):
+            changed = dict(error)
+            del changed[missing]
+            events = PeerEvents(True)
+            events.observe(json.dumps({"type": "error", "event_id": "e", "error": changed}))
+            with self.assertRaises(RuntimeError):
+                events.check()
 
     def test_late_errors_remain_failures_after_valid_closed_usage(self):
-        closed = json.dumps({"type": "session.closed", "reason": "close_requested",
+        closed = json.dumps({"type": "session.closed", "event_id": "closed", "reason": "close_requested",
                              "session": {"id": "s", "model": "gpt-live-1",
                                          "status": "active", "expires_at": 1},
                              "usage": {"seconds": 1}})
         for invalid in ('{', '{"type":"error"}', '{"type":"session.closed"}',
                         '{"type":"session.output_transcript.delta","delta":"x"}',
                         '{"type":"unknown","type":"unknown"}', '{"type":"unknown","x":NaN}',
-                        '{"type":"error","error":{"type":"invalid_request_error","code":null}}'):
+                        '{"type":"error","error":{"type":"invalid_request_error","code":null}}',
+                        '{"type":"transport.failed","event_id":"failed"}'):
             for before in (True, False):
                 events = PeerEvents(True)
                 for message in ((invalid, closed) if before else (closed, invalid)):

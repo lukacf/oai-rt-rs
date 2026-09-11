@@ -126,6 +126,7 @@ fn only_explicit_exact_browser_denial_can_be_whitelisted() {
 async fn final_drain_retains_usage_but_never_greenwashes_provider_or_decode_errors() {
     for unexpected in [
         json!({"type":"error","event_id":"bad","error":{"type":"invalid_request_error","code":null,"message":"synthetic"}}),
+        json!({"type":"transport.failed","event_id":"bad","session_id":"s","error":{"type":"call_error","code":"failed","message":"synthetic"}}),
         json!({"type":"session.output_transcript.delta","event_id":"bad","delta":"missing timing"}),
         json!({"type":"response.event","event_id":"bad","event":{"type":"response.completed"}}),
         Value::Null,
