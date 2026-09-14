@@ -1,4 +1,20 @@
-use std::fmt;
+use std::{fmt, sync::Arc};
+
+/// A snapshot contradicted the transport's bound session, or arrived before a
+/// primary's first valid `session.started`. Payloads are explicit-only.
+#[derive(Clone, PartialEq, Eq)]
+pub struct SessionIdentityMismatch {
+    /// `None` means the primary has not bound its first started session.
+    pub expected_session_id: Option<String>,
+    pub observed_session_id: String,
+    pub raw: serde_json::Value,
+}
+
+impl fmt::Debug for SessionIdentityMismatch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("SessionIdentityMismatch { [payload redacted] }")
+    }
+}
 
 /// Public Live failures. Display/Debug deliberately omit server bodies, URLs,
 /// credentials, transcripts, and function arguments.
@@ -27,6 +43,9 @@ pub enum Error {
     AmbiguousWrite,
     /// The connection ended without a `session.closed` final usage event.
     UnconfirmedClose,
+    /// Sticky identity failure. The offending snapshot is not an accepted event
+    /// or final-usage receipt. No further commands may start on this transport.
+    SessionIdentityMismatch(Arc<SessionIdentityMismatch>),
     /// The transport could not retain a complete frame within its configured bound.
     ContinuityLost,
     Closed,
@@ -60,6 +79,9 @@ impl fmt::Display for Error {
             Self::UnconfirmedClose => {
                 f.write_str("Live connection ended without final usage confirmation")
             }
+            Self::SessionIdentityMismatch(_) => f.write_str(
+                "Live session identity mismatch; remote close and final usage unconfirmed",
+            ),
             Self::ContinuityLost => {
                 f.write_str("Live frame capacity exceeded; stream continuity lost")
             }

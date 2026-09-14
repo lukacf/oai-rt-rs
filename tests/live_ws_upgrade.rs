@@ -107,7 +107,13 @@ async fn authenticated_primary_fork_and_sideband_never_log_bearer_at_trace() {
                     tcp.write_all(b"HTTP/1.1 429 Too Many Requests\r\nContent-Length: 4\r\nX-Request-Id: req-trace\r\nRetry-After: 3\r\n\r\ndeny").await.unwrap();
                     return;
                 }
-                let session = json!({"id":"new-session","model":"gpt-live-1","status":"active","expires_at":1});
+                let id = if operation == 2 {
+                    "existing"
+                } else {
+                    "new-session"
+                };
+                let session =
+                    json!({"id":id,"model":"gpt-live-1","status":"active","expires_at":1});
                 let started =
                     json!({"type":"session.started","event_id":"s","session":session}).to_string();
                 let mut reply = format!("HTTP/1.1 101 Switching Protocols\r\nUpgrade: WebSocket\r\nConnection: keep-alive, uPgRaDe\r\nSec-WebSocket-Accept: {}\r\n\r\n", accept_key(&request)).into_bytes();

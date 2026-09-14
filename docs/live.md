@@ -78,6 +78,15 @@ default `None` omits the query; the server may enable the behavior itself.
 Dropping a sideband disconnects that observer, not an implicit `session.close`;
 the underlying call can continue.
 
+Attach binds the exact requested session ID before the driver starts. Sideband
+control remains available immediately after attach: a `session.started` replay
+is not required, and is not a media-readiness receipt. A primary binds its first
+valid, nonempty `session.started` ID after sending start; a fork must also differ
+from its source ID. Subsequent `session.started`, `session.updated`, and
+`session.closed` snapshots must use that same ID. Same-ID started replays remain
+visible and do not reopen a closing session. The first valid same-ID closed event
+ends the stream; later wire frames are not read or counted again.
+
 `client.data_channel` permission lists distinguish omitted defaults, `"all"`,
 and `[]` (deny all). Lists are bounded to 256 entries. Named client events must
 match the schema's lowercase dotted-name pattern (or `error`/`info`). A
@@ -159,7 +168,7 @@ oversized input is rejected even when the writer and command queue are blocked.
 Only the bounded wire string and small validation metadata enter the queue,
 not a second retained copy of the original command. Serialization itself stops
 at the byte budget, including JSON escaping. The driver rechecks current session
-mode and lifecycle when dequeuing; a prequeue check never substitutes for that
+mode, identity, and lifecycle when dequeuing; a prequeue check never substitutes for that
 race-sensitive validation. The byte budget is not a guessed 500-token limit.
 
 Send completion confirms a transport write, not provider acceptance or exactly-once
@@ -167,19 +176,51 @@ delivery. Cancelling a send after enqueueing may race with a write. An I/O failu
 during writing returns `AmbiguousWrite`; **do not blindly retry**. Event IDs are
 correlation identifiers, not idempotency keys.
 
+A conflicting snapshot fails closed in the single driver, before changing session
+mode, readiness, or final usage. The transport latches
+`Error::SessionIdentityMismatch(Arc<SessionIdentityMismatch>)`, with the expected
+ID, observed ID, and original parsed JSON available explicitly. Display/Debug
+redact this evidence. A primary snapshot before valid startup (including an empty
+started ID), or a fork reusing its source ID, also fails this way; the expected ID
+is `None` until bound. Identifiable conflicts in malformed known snapshots cannot
+bypass the fence. Events whose grammar carries no session identity remain legal.
+
+After driver observation of a conflict, no queued application or `session.close`
+write can begin. Queued/waiting sends receive the typed identity error; a write
+already in flight remains `AmbiguousWrite`, not proof of cancellation or delivery.
+Already completed writes cannot be recalled. This fence cannot detect wire events
+not yet read because of backpressure, nor does it authenticate identity-less
+events. Normal single-reader backpressure and bounded queues are unchanged.
+The mismatching transport is released locally even if its error is waiting behind
+a full event queue. Its snapshot is never delivered as an accepted Started/Closed
+event or final usage. The identity error remains sticky on subsequent sends and
+after the event stream drains, rather than becoming successful EOF.
+
 `connection.close(timeout, observe)` requests `session.close`, forwards remaining
 events to the callback, and returns the terminal `session.closed` frame with final
 usage. New commands are rejected after closing starts. Active backend work may
 finish, but a pending function-result continuation cannot be submitted then.
 Dropping the receiver aborts the driver and releases the socket; it is not graceful
 close. A disconnected transport without a terminal event yields `UnconfirmedClose`,
-not successful finalization. A close deadline aborts the remaining transport.
+not successful finalization. A close deadline or cancellation of a polled close
+future aborts the remaining transport.
+
+`connection.disconnect().await` (also available on the split `LiveReceiver`)
+aborts and joins the local driver without a provider close or event-queue drain.
+It is repeatable and cancellation still requests abort. It returns the latched
+identity error, or `UnconfirmedClose` unless a valid final snapshot was already
+observed; successful local release alone never proves remote hangup. Previously
+queued events remain readable, and latched identity evidence survives abort even
+if it was still pending inside the driver. Other driver-local pending events may
+be lost on deliberate abort; use graceful close to drain them when safe.
 
 Malformed nonterminal events are surfaced as `Error::MalformedEvent`, including
 an explicit-only raw payload, without automatically ending the reader. Use
 `close_with_events` to observe `Result<ServerFrame>` values and deliberately
 continue draining after a decode error. Ordinary `close` is fail-fast on such
-errors. A malformed final event never confirms usage; a later valid final event
+errors. Identity failures are terminal even when the close callback accepts the
+error, and cannot be replaced by a later valid-looking final snapshot.
+A malformed final event never confirms usage; a later valid final event
 can. Queue backpressure does not discard events or grow an unbounded raw-event
 buffer. Frame-capacity loss is explicit `ContinuityLost` plus unconfirmed usage.
 

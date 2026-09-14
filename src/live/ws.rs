@@ -1,9 +1,18 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use futures::{SinkExt, StreamExt, stream::SplitSink};
-use std::{collections::VecDeque, future::Future, pin::Pin, time::Duration};
+use std::{
+    collections::VecDeque,
+    future::Future,
+    pin::Pin,
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 use tokio::{
     sync::{mpsc, oneshot, watch},
-    task::JoinHandle,
+    task::{AbortHandle, JoinHandle},
     time::{Instant, timeout},
 };
 use tokio_tungstenite::{
@@ -17,20 +26,25 @@ use tokio_tungstenite::{
 use super::{
     AudioFormat, ClientEvent, Codec, Command, DelegationConfig, DelegationTarget, DelegationUpdate,
     Error, Field, ForkSessionConfig, ForkStartEvent, HttpBodyIssue, LiveClient, Result,
-    ServerEvent, ServerFrame, SessionConfig, decode_audio, validate_audio_bytes,
+    ServerEvent, ServerFrame, SessionConfig, SessionIdentityMismatch, decode_audio,
+    validate_audio_bytes,
 };
 
 type Socket = WebSocketStream<reqwest::Upgraded>;
 
-#[derive(Clone, Copy)]
 enum Startup {
     New {
         format: AudioFormat,
         responses_mode: bool,
     },
-    Fork(AudioFormat),
-    Attached,
+    Fork {
+        format: AudioFormat,
+        source_session_id: String,
+    },
+    Attached(String),
 }
+
+type IdentityFailure = Arc<OnceLock<Arc<SessionIdentityMismatch>>>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConnectionRole {
@@ -58,6 +72,7 @@ struct WriteRequest {
     text: String,
     guard: CommandGuard,
     completion: oneshot::Sender<Result<()>>,
+    in_flight: Arc<AtomicBool>,
 }
 
 enum CommandGuard {
@@ -111,6 +126,7 @@ pub struct LiveSender {
     role: ConnectionRole,
     format: AudioFormat,
     codec: Codec,
+    identity_failure: IdentityFailure,
 }
 
 /// Sole event receiver. Dropping it aborts the driver and releases the socket.
@@ -119,14 +135,29 @@ pub struct LiveReceiver {
     events: mpsc::Receiver<Result<ServerFrame>>,
     buffered: VecDeque<ServerFrame>,
     driver: JoinHandle<()>,
+    driver_finished: bool,
     phase: watch::Sender<SessionPhase>,
+    identity_failure: IdentityFailure,
 }
 
 impl Drop for LiveReceiver {
     fn drop(&mut self) {
-        self.driver.abort();
-        if *self.phase.borrow() != SessionPhase::Closed {
-            self.phase.send_replace(SessionPhase::Disconnected);
+        drop(self.abort_guard());
+    }
+}
+
+struct AbortOnDrop {
+    driver: Option<AbortHandle>,
+    phase: watch::Sender<SessionPhase>,
+}
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        if let Some(driver) = &self.driver {
+            if *self.phase.borrow() != SessionPhase::Closed {
+                self.phase.send_replace(SessionPhase::Disconnected);
+            }
+            driver.abort();
         }
     }
 }
@@ -184,15 +215,14 @@ impl LiveClient {
         ) {
             return Err(Error::AmbiguousWrite);
         }
-        let connection = self
-            .wait_started(self.spawn(socket, Startup::Fork(format)))
-            .await?;
-        if connection.receiver.buffered.iter().any(|frame| {
-            matches!(&frame.event,ServerEvent::Started {session,..} if session.id == source_session_id)
-        }) {
-            return Err(Error::Invalid("fork must return a new session identifier".into()));
-        }
-        Ok(connection)
+        self.wait_started(self.spawn(
+            socket,
+            Startup::Fork {
+                format,
+                source_session_id: source_session_id.to_owned(),
+            },
+        ))
+        .await
     }
 
     async fn wait_started(&self, mut connection: LiveConnection) -> Result<LiveConnection> {
@@ -224,6 +254,9 @@ impl LiveClient {
         .await
         .map_err(|_| Error::Timeout)?;
         ready?;
+        if let Some(failure) = connection.sender.identity_failure.get() {
+            return Err(Error::SessionIdentityMismatch(failure.clone()));
+        }
         Ok(connection)
     }
 
@@ -253,7 +286,7 @@ impl LiveClient {
                 options.graceful_close,
             )
             .await?;
-        Ok(self.spawn(socket, Startup::Attached))
+        Ok(self.spawn(socket, Startup::Attached(session_id.to_owned())))
     }
 
     async fn open_socket(&self, segments: &[&str]) -> Result<Socket> {
@@ -309,13 +342,24 @@ impl LiveClient {
     }
 
     fn spawn(&self, socket: Socket, startup: Startup) -> LiveConnection {
+        let mut session_id = None;
+        let mut fork_source = None;
         let (role, responses_mode, format, started_sent) = match startup {
             Startup::New {
                 format,
                 responses_mode,
             } => (ConnectionRole::Primary, Some(responses_mode), format, false),
-            Startup::Fork(format) => (ConnectionRole::Primary, None, format, true),
-            Startup::Attached => (ConnectionRole::Sideband, None, AudioFormat::default(), true),
+            Startup::Fork {
+                format,
+                source_session_id,
+            } => {
+                fork_source = Some(source_session_id);
+                (ConnectionRole::Primary, None, format, true)
+            }
+            Startup::Attached(id) => {
+                session_id = Some(id);
+                (ConnectionRole::Sideband, None, AudioFormat::default(), true)
+            }
         };
         let (commands, requests) = mpsc::channel(self.options.command_capacity);
         let (events, incoming) = mpsc::channel(self.options.event_capacity);
@@ -325,11 +369,15 @@ impl LiveClient {
             SessionPhase::Active
         };
         let (phase_tx, phase) = watch::channel(initial);
+        let identity_failure = IdentityFailure::default();
         let state = DriverState {
             role,
             responses_mode,
             phase: phase_tx.clone(),
             started_sent,
+            session_id,
+            fork_source,
+            identity_failure: identity_failure.clone(),
         };
         let driver = tokio::spawn(run_driver(
             socket,
@@ -346,12 +394,15 @@ impl LiveClient {
                 role,
                 format,
                 codec: self.options.codec,
+                identity_failure: identity_failure.clone(),
             },
             receiver: LiveReceiver {
                 events: incoming,
                 buffered: VecDeque::new(),
                 driver,
+                driver_finished: false,
                 phase: phase_tx,
+                identity_failure,
             },
         }
     }
@@ -378,6 +429,16 @@ impl LiveConnection {
     /// Returns malformed event/transport errors; unexpected EOF is not success.
     pub async fn next_event(&mut self) -> Result<Option<ServerFrame>> {
         self.receiver.next_event().await
+    }
+
+    /// Release only this local transport, without sending `session.close` or
+    /// waiting for event-queue space. Buffered evidence remains readable.
+    ///
+    /// # Errors
+    /// Returns the sticky identity failure, or `UnconfirmedClose` unless a valid
+    /// final snapshot was already observed. This never confirms a remote hangup.
+    pub async fn disconnect(&mut self) -> Result<()> {
+        self.receiver.disconnect().await
     }
 
     /// Send close and drain every remaining event through the supplied callback,
@@ -411,6 +472,7 @@ impl LiveConnection {
     where
         F: FnMut(Result<ServerFrame>) -> Result<()>,
     {
+        let mut abort = self.receiver.abort_guard();
         let sender = self.sender.clone();
         let mut sent = sender.phase() != SessionPhase::Active;
         let send_close = sender.send(ClientEvent::new(Command::Close));
@@ -435,6 +497,10 @@ impl LiveConnection {
                                 observe(Ok(frame))?;
                             }
                             Ok(None) => return Err(Error::UnconfirmedClose),
+                            Err(Error::SessionIdentityMismatch(failure)) => {
+                                observe(Err(Error::SessionIdentityMismatch(failure.clone())))?;
+                                return Err(Error::SessionIdentityMismatch(failure));
+                            }
                             Err(error) => observe(Err(error))?,
                         }
                     }
@@ -443,11 +509,8 @@ impl LiveConnection {
         })
         .await;
         let result = result.unwrap_or(Err(Error::Timeout));
-        if result.is_err() {
-            self.receiver.driver.abort();
-            if *self.receiver.phase.borrow() != SessionPhase::Closed {
-                self.receiver.phase.send_replace(SessionPhase::Disconnected);
-            }
+        if result.is_ok() {
+            abort.driver = None;
         }
         result
     }
@@ -479,6 +542,9 @@ impl LiveSender {
     }
 
     async fn send_prepared(&self, text: String, guard: CommandGuard) -> Result<()> {
+        if let Some(failure) = self.identity_failure.get() {
+            return Err(Error::SessionIdentityMismatch(failure.clone()));
+        }
         if matches!(
             self.phase(),
             SessionPhase::Closing | SessionPhase::Closed | SessionPhase::Disconnected
@@ -486,15 +552,38 @@ impl LiveSender {
             return Err(Error::Closed);
         }
         let (completion, result) = oneshot::channel();
+        let in_flight = Arc::new(AtomicBool::new(false));
         self.commands
             .send(WriteRequest {
                 text,
                 guard,
                 completion,
+                in_flight: in_flight.clone(),
             })
             .await
-            .map_err(|_| Error::Closed)?;
-        result.await.unwrap_or(Err(Error::AmbiguousWrite))
+            .map_err(|_| identity_or_closed(&self.identity_failure))?;
+        self.wait_for_write(result, &in_flight).await
+    }
+
+    async fn wait_for_write(
+        &self,
+        mut result: oneshot::Receiver<Result<()>>,
+        in_flight: &AtomicBool,
+    ) -> Result<()> {
+        let delivery_error = || {
+            if in_flight.load(Ordering::Acquire) {
+                Error::AmbiguousWrite
+            } else {
+                identity_or_closed(&self.identity_failure)
+            }
+        };
+        // A reserved channel slot can outlive receiver teardown. Do not wait on
+        // its undeliverable receipt, or claim cancellation of a dequeued write.
+        tokio::select! {
+            biased;
+            result = &mut result => result.unwrap_or_else(|_| Err(delivery_error())),
+            () = self.commands.closed() => result.try_recv().unwrap_or_else(|_| Err(delivery_error())),
+        }
     }
 
     /// Encode one raw audio chunk. Caller controls ordering, pacing and silence.
@@ -539,13 +628,52 @@ impl LiveSender {
 }
 
 impl LiveReceiver {
+    fn abort_guard(&self) -> AbortOnDrop {
+        AbortOnDrop {
+            driver: Some(self.driver.abort_handle()),
+            phase: self.phase.clone(),
+        }
+    }
+
+    /// Release the local socket without sending a provider close, even with a
+    /// full event queue. Cancelling this operation still requests driver abort.
+    ///
+    /// # Errors
+    /// Returns sticky identity failure or `UnconfirmedClose` without a valid
+    /// final snapshot; a driver panic is a transport error.
+    pub async fn disconnect(&mut self) -> Result<()> {
+        drop(self.abort_guard());
+        if !self.driver_finished {
+            let result = (&mut self.driver).await;
+            self.driver_finished = true;
+            if let Err(error) = result {
+                if !error.is_cancelled() {
+                    return Err(Error::Transport("Live driver failed".into()));
+                }
+            }
+        }
+        if let Some(failure) = self.identity_failure.get() {
+            return Err(Error::SessionIdentityMismatch(failure.clone()));
+        }
+        if *self.phase.borrow() == SessionPhase::Closed {
+            Ok(())
+        } else {
+            Err(Error::UnconfirmedClose)
+        }
+    }
+
     /// # Errors
     /// Returns protocol/transport errors; only confirmed termination yields EOF.
     pub async fn next_event(&mut self) -> Result<Option<ServerFrame>> {
         if let Some(frame) = self.buffered.pop_front() {
             return Ok(Some(frame));
         }
-        self.events.recv().await.transpose()
+        match self.events.recv().await {
+            Some(event) => event.map(Some),
+            None => self.identity_failure.get().map_or(Ok(None), |failure| {
+                Err(Error::SessionIdentityMismatch(failure.clone()))
+            }),
+        }
     }
 }
 
@@ -554,10 +682,16 @@ struct DriverState {
     responses_mode: Option<bool>,
     phase: watch::Sender<SessionPhase>,
     started_sent: bool,
+    session_id: Option<String>,
+    fork_source: Option<String>,
+    identity_failure: IdentityFailure,
 }
 
 impl DriverState {
     fn validate(&self, command: &CommandGuard) -> Result<()> {
+        if let Some(failure) = self.identity_failure.get() {
+            return Err(Error::SessionIdentityMismatch(failure.clone()));
+        }
         let phase = *self.phase.borrow();
         if matches!(
             phase,
@@ -614,7 +748,48 @@ impl DriverState {
         Ok(())
     }
 
-    fn observe(&mut self, frame: &ServerFrame) -> bool {
+    fn check_identity(&mut self, raw: &serde_json::Value, can_bind: bool) -> Result<()> {
+        if let Some(failure) = self.identity_failure.get() {
+            return Err(Error::SessionIdentityMismatch(failure.clone()));
+        }
+        if !matches!(
+            raw["type"].as_str(),
+            Some("session.started" | "session.updated" | "session.closed")
+        ) {
+            return Ok(());
+        }
+        let Some(id) = raw["session"]["id"].as_str() else {
+            return Ok(());
+        };
+        if self.session_id.as_deref() == Some(id) {
+            return Ok(());
+        }
+        if self.session_id.is_none()
+            && can_bind
+            && self.started_sent
+            && !id.is_empty()
+            && self.fork_source.as_deref() != Some(id)
+        {
+            self.session_id = Some(id.to_owned());
+            self.fork_source = None;
+            return Ok(());
+        }
+        let failure = self.identity_failure.get_or_init(|| {
+            Arc::new(SessionIdentityMismatch {
+                expected_session_id: self.session_id.clone(),
+                observed_session_id: id.to_owned(),
+                raw: raw.clone(),
+            })
+        });
+        self.phase.send_replace(SessionPhase::Disconnected);
+        Err(Error::SessionIdentityMismatch(failure.clone()))
+    }
+
+    fn observe(&mut self, frame: &ServerFrame) -> Result<bool> {
+        self.check_identity(
+            &frame.raw,
+            matches!(frame.event, ServerEvent::Started { .. }),
+        )?;
         let startup_error = *self.phase.borrow() == SessionPhase::Starting
             && matches!(frame.event, ServerEvent::Error { .. });
         if let ServerEvent::Started { session, .. } = &frame.event {
@@ -642,7 +817,21 @@ impl DriverState {
         if startup_error {
             self.phase.send_replace(SessionPhase::Disconnected);
         }
-        matches!(frame.event, ServerEvent::Closed { .. }) || startup_error
+        Ok(matches!(frame.event, ServerEvent::Closed { .. }) || startup_error)
+    }
+
+    fn decode_and_observe(&mut self, codec: Codec, text: &str) -> (bool, Result<ServerFrame>) {
+        let result = match codec.decode_server(text) {
+            Ok(frame) => self.observe(&frame).map(|done| (done, frame)),
+            Err(Error::MalformedEvent { raw, source }) => self
+                .check_identity(&raw, false)
+                .and(Err(Error::MalformedEvent { raw, source })),
+            Err(error) => Err(error),
+        };
+        match result {
+            Ok((done, frame)) => (done, Ok(frame)),
+            Err(error) => (self.identity_failure.get().is_some(), Err(error)),
+        }
     }
 }
 
@@ -730,10 +919,24 @@ fn begin_write(
     InFlightWrite { future, completion }
 }
 
-fn reject_queued(requests: &mut mpsc::Receiver<WriteRequest>) {
+fn identity_or_closed(failure: &IdentityFailure) -> Error {
+    failure.get().map_or(Error::Closed, |failure| {
+        Error::SessionIdentityMismatch(failure.clone())
+    })
+}
+
+fn abandon_write(writing: &mut Option<InFlightWrite>) {
+    if let Some(write) = writing.take() {
+        if let Some(completion) = write.completion {
+            let _ = completion.send(Err(Error::AmbiguousWrite));
+        }
+    }
+}
+
+fn reject_queued(requests: &mut mpsc::Receiver<WriteRequest>, failure: &IdentityFailure) {
     requests.close();
     while let Ok(request) = requests.try_recv() {
-        let _ = request.completion.send(Err(Error::Closed));
+        let _ = request.completion.send(Err(identity_or_closed(failure)));
     }
 }
 
@@ -745,7 +948,8 @@ async fn run_driver(
     codec: Codec,
     write_timeout: Duration,
 ) {
-    let (writer, mut reader) = socket.split();
+    let (writer, reader) = socket.split();
+    let mut reader = Some(reader);
     let mut writer = Some(writer);
     let mut writing: Option<InFlightWrite> = None;
     let mut pending = VecDeque::new();
@@ -755,9 +959,12 @@ async fn run_driver(
     let mut receive_deadline = None;
     loop {
         if terminal {
-            reject_queued(&mut requests);
-            if let Some(completion) = writing.as_mut().and_then(|write| write.completion.take()) {
-                let _ = completion.send(Err(Error::AmbiguousWrite));
+            reject_queued(&mut requests, &state.identity_failure);
+            // Never poll a previously prepared write after terminal observation.
+            abandon_write(&mut writing);
+            if state.identity_failure.get().is_some() {
+                drop(writer.take());
+                drop(reader.take());
             }
         }
         if flush_pending && writing.is_none() && !terminal && receive_deadline.is_none() {
@@ -785,7 +992,7 @@ async fn run_driver(
                 writer = Some(returned_writer);
                 if !success && !terminal {
                     state.phase.send_replace(SessionPhase::Disconnected);
-                    reject_queued(&mut requests);
+                    reject_queued(&mut requests, &state.identity_failure);
                     commands_open = false;
                     // A broken sink does not prove the reader has lost final usage.
                     receive_deadline = Some(Instant::now() + write_timeout);
@@ -802,18 +1009,15 @@ async fn run_driver(
                     let _ = request.completion.send(Err(error));
                     continue;
                 }
+                request.in_flight.store(true, Ordering::Release);
                 writing = Some(begin_write(writer.take().expect("idle writer"), Some(request.text), write_timeout, Some(request.completion)));
             }
-            message = reader.next(), if pending.is_empty() && !terminal => {
+            message = async { reader.as_mut().expect("open reader").next().await }, if pending.is_empty() && !terminal => {
                 match message {
                     Some(Ok(Message::Text(text))) => {
-                        match codec.decode_server(&text) {
-                            Ok(frame) => {
-                                terminal = state.observe(&frame);
-                                pending.push_back(Ok(frame));
-                            }
-                            Err(error) => { pending.push_back(Err(error)); }
-                        }
+                        let (done, event) = state.decode_and_observe(codec, &text);
+                        terminal = done;
+                        pending.push_back(event);
                     }
                     Some(Ok(Message::Ping(_))) => {
                         flush_pending = true;
@@ -836,8 +1040,8 @@ async fn run_driver(
             }
         }
     }
-    reject_queued(&mut requests);
-    drop(writing);
+    reject_queued(&mut requests, &state.identity_failure);
+    abandon_write(&mut writing);
     if *state.phase.borrow() != SessionPhase::Closed {
         state.phase.send_replace(SessionPhase::Disconnected);
     }
@@ -863,6 +1067,7 @@ mod framing_tests {
             codec: Codec {
                 max_event_bytes: 512,
             },
+            identity_failure: IdentityFailure::default(),
         };
         let (completion, _receipt) = oneshot::channel();
         sender
@@ -871,6 +1076,7 @@ mod framing_tests {
                 text: "{}".into(),
                 guard: CommandGuard::Other,
                 completion,
+                in_flight: Arc::new(AtomicBool::new(false)),
             })
             .await
             .unwrap();
@@ -914,6 +1120,9 @@ mod framing_tests {
             responses_mode: None,
             phase,
             started_sent: true,
+            session_id: Some("s".into()),
+            fork_source: None,
+            identity_failure: IdentityFailure::default(),
         };
         let guard = CommandGuard::Responses;
         state.validate(&guard).unwrap();
@@ -926,12 +1135,124 @@ mod framing_tests {
         }"#,
             )
             .unwrap();
-        state.observe(&frame);
+        state.observe(&frame).unwrap();
         assert!(matches!(state.prepare(&guard), Err(Error::Invalid(_))));
         state.phase.send_replace(SessionPhase::Closing);
         assert!(matches!(
             state.prepare(&CommandGuard::Other),
             Err(Error::Closed)
         ));
+    }
+
+    #[test]
+    fn identity_failure_precedes_mode_changes_and_all_dequeue_guards() {
+        let (phase, _) = watch::channel(SessionPhase::Active);
+        let mut state = DriverState {
+            role: ConnectionRole::Sideband,
+            responses_mode: None,
+            phase,
+            started_sent: true,
+            session_id: Some("bound".into()),
+            fork_source: None,
+            identity_failure: IdentityFailure::default(),
+        };
+        let frame = Codec::default()
+            .decode_server(
+                r#"{"type":"session.started","event_id":"e","session":{
+                    "id":"alien","model":"gpt-live-1","status":"active","expires_at":1,
+                    "delegation":{"type":"client"}
+                }}"#,
+            )
+            .unwrap();
+        state.validate(&CommandGuard::Close).unwrap();
+        assert!(matches!(
+            state.observe(&frame),
+            Err(Error::SessionIdentityMismatch(_))
+        ));
+        assert_eq!(state.responses_mode, None);
+        assert_eq!(state.session_id.as_deref(), Some("bound"));
+        assert_eq!(*state.phase.borrow(), SessionPhase::Disconnected);
+        for guard in [
+            CommandGuard::Start,
+            CommandGuard::Audio,
+            CommandGuard::Responses,
+            CommandGuard::Update(None),
+            CommandGuard::Context { attributed: true },
+            CommandGuard::Close,
+            CommandGuard::Other,
+        ] {
+            assert!(matches!(
+                state.prepare(&guard),
+                Err(Error::SessionIdentityMismatch(_))
+            ));
+        }
+        let mut replay = frame.raw;
+        replay["session"]["id"] = serde_json::json!("bound");
+        let (terminal, event) = state.decode_and_observe(Codec::default(), &replay.to_string());
+        assert!(terminal);
+        assert!(matches!(event, Err(Error::SessionIdentityMismatch(_))));
+        assert_eq!(*state.phase.borrow(), SessionPhase::Disconnected);
+    }
+
+    #[tokio::test]
+    async fn reserved_queue_teardown_is_not_mistaken_for_an_inflight_write() {
+        let failure = IdentityFailure::default();
+        failure
+            .set(Arc::new(SessionIdentityMismatch {
+                expected_session_id: Some("bound".into()),
+                observed_session_id: "alien".into(),
+                raw: serde_json::json!({}),
+            }))
+            .unwrap();
+        let (commands, mut requests) = mpsc::channel(1);
+        let (_, phase) = watch::channel(SessionPhase::Disconnected);
+        let sender = LiveSender {
+            commands,
+            phase,
+            role: ConnectionRole::Sideband,
+            format: AudioFormat::default(),
+            codec: Codec::default(),
+            identity_failure: failure.clone(),
+        };
+        let permit = sender.commands.reserve().await.unwrap();
+        reject_queued(&mut requests, &failure);
+        drop(requests);
+        let (completion, receipt) = oneshot::channel();
+        let in_flight = Arc::new(AtomicBool::new(false));
+        permit.send(WriteRequest {
+            text: "{}".into(),
+            guard: CommandGuard::Close,
+            completion,
+            in_flight: in_flight.clone(),
+        });
+        assert!(matches!(
+            timeout(
+                Duration::from_secs(1),
+                sender.wait_for_write(receipt, &in_flight)
+            )
+            .await
+            .unwrap(),
+            Err(Error::SessionIdentityMismatch(_))
+        ));
+
+        in_flight.store(true, Ordering::Release);
+        let (completion, receipt) = oneshot::channel();
+        assert!(matches!(
+            sender.wait_for_write(receipt, &in_flight).await,
+            Err(Error::AmbiguousWrite)
+        ));
+        drop(completion);
+        let (completion, receipt) = oneshot::channel();
+        completion.send(Ok(())).unwrap();
+        sender.wait_for_write(receipt, &in_flight).await.unwrap();
+
+        let (completion, receipt) = oneshot::channel();
+        let mut writing = Some(InFlightWrite {
+            future: Box::pin(async { panic!("abandoned writer must never be polled") }),
+            completion: Some(completion),
+        });
+        abandon_write(&mut writing);
+        assert!(writing.is_none());
+        assert!(matches!(receipt.await.unwrap(), Err(Error::AmbiguousWrite)));
     }
 }

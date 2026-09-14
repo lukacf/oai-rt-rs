@@ -21,7 +21,7 @@ mod ws;
 pub use audio::*;
 pub use client::{ClientOptions, LiveClient};
 pub use codec::*;
-pub use error::{Error, HttpBodyIssue, Result};
+pub use error::{Error, HttpBodyIssue, Result, SessionIdentityMismatch};
 pub use events::*;
 pub use fork::*;
 pub use models::*;
