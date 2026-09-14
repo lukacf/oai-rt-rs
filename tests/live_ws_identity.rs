@@ -294,6 +294,7 @@ async fn same_id_replay_and_identityless_traffic_preserve_bytes_and_final_usage(
         assert_eq!(connection.sender().phase(), SessionPhase::Closed);
         assert!(connection.next_event().await.unwrap().is_none());
         connection.disconnect().await.unwrap();
+        assert!(connection.next_event().await.unwrap().is_none());
         peer.await.unwrap();
     }
 }
@@ -452,9 +453,10 @@ async fn cancelling_close_aborts_local_transport_without_fabricating_remote_clos
     drop(close);
     assert_eq!(connection.sender().phase(), SessionPhase::Disconnected);
     assert!(matches!(
-        connection.disconnect().await,
+        timeout(WAIT, connection.next_event()).await.unwrap(),
         Err(Error::UnconfirmedClose)
     ));
+    assert!(connection.next_event().await.unwrap().is_none());
     peer.await.unwrap();
 }
 
@@ -484,9 +486,37 @@ async fn cancelling_pending_local_disconnect_still_aborts_full_queue_driver() {
         sender.send(ClientEvent::new(Command::Close)).await,
         Err(Error::Closed)
     ));
+    timeout(WAIT, async {
+        loop {
+            match receiver.next_event().await {
+                Ok(Some(frame)) => assert!(matches!(frame.event, ServerEvent::UsageUpdated { .. })),
+                Err(Error::UnconfirmedClose) => break,
+                result => panic!("abort lost its unconfirmed stream fate: {result:?}"),
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert!(receiver.next_event().await.unwrap().is_none());
+    assert!(receiver.next_event().await.unwrap().is_none());
+    peer.await.unwrap();
+}
+
+#[tokio::test]
+async fn disconnect_after_reported_remote_eof_does_not_repeat_terminal_error() {
+    let (client, peer) = server(|mut peer| async move {
+        peer.close(None).await.unwrap();
+    })
+    .await;
+    let mut connection = client.attach("bound").await.unwrap();
     assert!(matches!(
-        receiver.disconnect().await,
+        timeout(WAIT, connection.next_event()).await.unwrap(),
         Err(Error::UnconfirmedClose)
     ));
+    assert!(matches!(
+        connection.disconnect().await,
+        Err(Error::UnconfirmedClose)
+    ));
+    assert!(connection.next_event().await.unwrap().is_none());
     peer.await.unwrap();
 }

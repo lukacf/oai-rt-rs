@@ -213,6 +213,11 @@ observed; successful local release alone never proves remote hangup. Previously
 queued events remain readable, and latched identity evidence survives abort even
 if it was still pending inside the driver. Other driver-local pending events may
 be lost on deliberate abort; use graceful close to drain them when safe.
+After local abort, including cancellation of a polled disconnect or close future,
+`next_event` drains buffered data and reports `UnconfirmedClose` once before EOF.
+No cleanup retry is needed to obtain this stream outcome. A previously delivered
+`UnconfirmedClose` or valid `session.closed` prevents a duplicate terminal result;
+sticky identity failure always takes precedence over this abort fallback.
 
 Malformed nonterminal events are surfaced as `Error::MalformedEvent`, including
 an explicit-only raw payload, without automatically ending the reader. Use

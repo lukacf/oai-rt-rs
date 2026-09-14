@@ -138,6 +138,8 @@ pub struct LiveReceiver {
     driver_finished: bool,
     phase: watch::Sender<SessionPhase>,
     identity_failure: IdentityFailure,
+    local_abort: Arc<AtomicBool>,
+    termination_reported: bool,
 }
 
 impl Drop for LiveReceiver {
@@ -149,11 +151,13 @@ impl Drop for LiveReceiver {
 struct AbortOnDrop {
     driver: Option<AbortHandle>,
     phase: watch::Sender<SessionPhase>,
+    local_abort: Arc<AtomicBool>,
 }
 
 impl Drop for AbortOnDrop {
     fn drop(&mut self) {
         if let Some(driver) = &self.driver {
+            self.local_abort.store(true, Ordering::Release);
             if *self.phase.borrow() != SessionPhase::Closed {
                 self.phase.send_replace(SessionPhase::Disconnected);
             }
@@ -403,6 +407,8 @@ impl LiveClient {
                 driver_finished: false,
                 phase: phase_tx,
                 identity_failure,
+                local_abort: Arc::new(AtomicBool::new(false)),
+                termination_reported: false,
             },
         }
     }
@@ -632,6 +638,7 @@ impl LiveReceiver {
         AbortOnDrop {
             driver: Some(self.driver.abort_handle()),
             phase: self.phase.clone(),
+            local_abort: self.local_abort.clone(),
         }
     }
 
@@ -663,17 +670,30 @@ impl LiveReceiver {
     }
 
     /// # Errors
-    /// Returns protocol/transport errors; only confirmed termination yields EOF.
+    /// Returns protocol/transport errors. Local abort reports `UnconfirmedClose`
+    /// after buffered data and before EOF, unless a terminal outcome was delivered.
     pub async fn next_event(&mut self) -> Result<Option<ServerFrame>> {
-        if let Some(frame) = self.buffered.pop_front() {
-            return Ok(Some(frame));
+        let event = if let Some(frame) = self.buffered.pop_front() {
+            Some(Ok(frame))
+        } else {
+            self.events.recv().await
+        };
+        if let Some(event) = event {
+            if matches!(&event, Ok(frame) if matches!(frame.event, ServerEvent::Closed { .. }))
+                || matches!(&event, Err(Error::UnconfirmedClose))
+            {
+                self.termination_reported = true;
+            }
+            return event.map(Some);
         }
-        match self.events.recv().await {
-            Some(event) => event.map(Some),
-            None => self.identity_failure.get().map_or(Ok(None), |failure| {
-                Err(Error::SessionIdentityMismatch(failure.clone()))
-            }),
+        if let Some(failure) = self.identity_failure.get() {
+            return Err(Error::SessionIdentityMismatch(failure.clone()));
         }
+        if self.local_abort.load(Ordering::Acquire) && !self.termination_reported {
+            self.termination_reported = true;
+            return Err(Error::UnconfirmedClose);
+        }
+        Ok(None)
     }
 }
 
@@ -1254,5 +1274,48 @@ mod framing_tests {
         abandon_write(&mut writing);
         assert!(writing.is_none());
         assert!(matches!(receipt.await.unwrap(), Err(Error::AmbiguousWrite)));
+    }
+
+    #[tokio::test]
+    async fn cancelled_disconnect_drains_buffered_data_before_one_terminal_outcome() {
+        for final_event in [false, true] {
+            let wire = if final_event {
+                r#"{"type":"session.closed","event_id":"c","session":{
+                    "id":"bound","model":"gpt-live-1","status":"active","expires_at":1
+                },"reason":"close_requested","usage":{"seconds":1}}"#
+            } else {
+                r#"{"type":"session.usage.updated","event_id":"u","usage":{"seconds":1}}"#
+            };
+            let frame = Codec::default().decode_server(wire).unwrap();
+            let (events, incoming) = mpsc::channel(1);
+            events.send(Ok(frame.clone())).await.unwrap();
+            let (phase, _) = watch::channel(if final_event {
+                SessionPhase::Closed
+            } else {
+                SessionPhase::Active
+            });
+            let mut receiver = LiveReceiver {
+                events: incoming,
+                buffered: VecDeque::new(),
+                driver: tokio::spawn(async move { events.closed().await }),
+                driver_finished: false,
+                phase,
+                identity_failure: IdentityFailure::default(),
+                local_abort: Arc::new(AtomicBool::new(false)),
+                termination_reported: false,
+            };
+            let mut disconnect = Box::pin(receiver.disconnect());
+            assert!(futures::poll!(&mut disconnect).is_pending());
+            drop(disconnect);
+            assert_eq!(receiver.next_event().await.unwrap(), Some(frame));
+            if !final_event {
+                assert!(matches!(
+                    receiver.next_event().await,
+                    Err(Error::UnconfirmedClose)
+                ));
+            }
+            assert!(receiver.next_event().await.unwrap().is_none());
+            assert!(receiver.next_event().await.unwrap().is_none());
+        }
     }
 }
