@@ -1,15 +1,16 @@
 use oai_rt_rs::protocol::models::{
-    AudioConfig, AudioFormat, GPT_REALTIME_2, GPT_REALTIME_TRANSLATE, GPT_REALTIME_WHISPER,
-    InputAudioConfig, InputAudioTranscription, Nullable, OutputAudioConfig, OutputModalities,
-    SessionConfig, SessionKind,
+    AudioConfig, AudioFormat, GPT_LIVE_TRANSCRIBE, GPT_REALTIME_2_1, GPT_REALTIME_TRANSLATE,
+    GPT_REALTIME_WHISPER, InputAudioConfig, InputAudioTranscription, Nullable, OutputAudioConfig,
+    OutputModalities, SessionConfig, SessionKind,
 };
 use oai_rt_rs::transport::rest::{ExpiresAfter, RealtimeRestAdapter};
-use oai_rt_rs::{RealtimeClient, Result};
+use oai_rt_rs::{Error, Realtime, RealtimeClient, Result, SdkEvent, ServerEvent};
 
-fn api_key() -> Option<String> {
+fn api_key() -> std::io::Result<String> {
     std::env::var("OPENAI_API_KEY")
         .ok()
         .filter(|key| !key.trim().is_empty())
+        .ok_or_else(|| std::io::Error::other("OPENAI_API_KEY is required for opted-in live tests"))
 }
 
 fn short_expiry() -> ExpiresAfter {
@@ -22,7 +23,7 @@ fn short_expiry() -> ExpiresAfter {
 fn realtime_config() -> SessionConfig {
     let mut config = SessionConfig::new(
         SessionKind::Realtime,
-        GPT_REALTIME_2,
+        GPT_REALTIME_2_1,
         OutputModalities::Audio,
     );
     config.audio = Some(AudioConfig {
@@ -54,8 +55,7 @@ fn translation_config() -> SessionConfig {
             turn_detection: None,
             transcription: Some(Nullable::Value(InputAudioTranscription {
                 model: Some(GPT_REALTIME_WHISPER.to_string()),
-                language: None,
-                prompt: None,
+                ..InputAudioTranscription::default()
             })),
             noise_reduction: None,
         }),
@@ -72,17 +72,16 @@ fn translation_config() -> SessionConfig {
 fn transcription_config() -> SessionConfig {
     let mut config = SessionConfig::new(
         SessionKind::Transcription,
-        GPT_REALTIME_WHISPER,
+        GPT_LIVE_TRANSCRIBE,
         OutputModalities::Audio,
     );
     config.audio = Some(AudioConfig {
         input: Some(InputAudioConfig {
             format: Some(AudioFormat::pcm_24khz()),
-            turn_detection: None,
+            turn_detection: Some(Nullable::Null),
             transcription: Some(Nullable::Value(InputAudioTranscription {
-                model: Some("gpt-4o-transcribe".to_string()),
-                language: Some("en".to_string()),
-                prompt: None,
+                model: Some(GPT_LIVE_TRANSCRIBE.to_string()),
+                ..InputAudioTranscription::default()
             })),
             noise_reduction: None,
         }),
@@ -95,22 +94,22 @@ fn transcription_config() -> SessionConfig {
 #[ignore = "realtime_live"]
 #[allow(clippy::result_large_err)]
 async fn realtime_live_rest_endpoints_accept_current_session_shapes() -> Result<()> {
-    let Some(api_key) = api_key() else {
-        eprintln!("skipping live test: OPENAI_API_KEY is not set");
-        return Ok(());
-    };
+    let api_key = api_key()?;
     let rest = RealtimeRestAdapter::new(&api_key)?;
 
     rest.create_client_secret_with_expiry(realtime_config(), Some(short_expiry()))
         .await?;
-    rest.create_session(SessionConfig::new(
-        SessionKind::Realtime,
-        "gpt-realtime",
-        OutputModalities::AudioText,
-    ))
-    .await?;
-    rest.create_transcription_session(transcription_config())
+    let transcription = rest
+        .create_transcription_client_secret_with_expiry_and_safety_identifier(
+            transcription_config(),
+            Some(short_expiry()),
+            None,
+        )
         .await?;
+    assert!(
+        !transcription.session.id.is_empty(),
+        "missing transcription session ID"
+    );
     rest.create_translation_client_secret_with_expiry_and_safety_identifier(
         translation_config(),
         Some(short_expiry()),
@@ -125,15 +124,50 @@ async fn realtime_live_rest_endpoints_accept_current_session_shapes() -> Result<
 #[ignore = "realtime_live"]
 #[allow(clippy::result_large_err)]
 async fn realtime_live_websocket_handshakes_accept_current_targets() -> Result<()> {
-    let Some(api_key) = api_key() else {
-        eprintln!("skipping live test: OPENAI_API_KEY is not set");
-        return Ok(());
-    };
+    let api_key = api_key()?;
 
-    let _voice = RealtimeClient::connect(&api_key, Some(GPT_REALTIME_2), None).await?;
-    let _transcription = RealtimeClient::connect_transcription(&api_key, None).await?;
+    let _voice = RealtimeClient::connect(&api_key, Some(GPT_REALTIME_2_1), None).await?;
     let _translation =
         RealtimeClient::connect_translation(&api_key, Some(GPT_REALTIME_TRANSLATE), None).await?;
 
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "realtime_live"]
+#[allow(clippy::result_large_err)]
+async fn realtime_live_transcription_builder_receives_ga_update() -> Result<()> {
+    let api_key = api_key()?;
+    let mut session = Realtime::transcription_builder()
+        .api_key(api_key)
+        .transcription_model(GPT_LIVE_TRANSCRIBE)
+        .manual_turn_detection()
+        .connect_ws()
+        .await?;
+    let update = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while let Some(event) = session.next_event().await? {
+            match event {
+                SdkEvent::Raw(raw) => {
+                    if let ServerEvent::TranscriptionSessionUpdated { session, .. } = *raw {
+                        return Ok(session);
+                    }
+                }
+                SdkEvent::Error { error, .. } => return Err(Error::Api(error)),
+                _ => {}
+            }
+        }
+        Err(Error::ConnectionClosed)
+    })
+    .await
+    .expect("timed out waiting for the GA transcription update")?;
+    assert_eq!(
+        update
+            .audio
+            .and_then(|audio| audio.input)
+            .and_then(|input| input.transcription)
+            .and_then(|settings| settings.as_ref()?.model.clone())
+            .as_deref(),
+        Some(GPT_LIVE_TRANSCRIBE)
+    );
     Ok(())
 }

@@ -90,6 +90,10 @@ fn inbound_fractional_timing_extensions_and_terminal_status_survive() {
         r#"{"type":"session.output_audio.delta","delta":"AAA=","start_ms":null}"#,
         r#"{"type":"session.usage.updated","event_id":"e","usage":null}"#,
         r#"{"type":"session.usage.updated","event_id":"e","usage":{"seconds":1,"seconds":2}}"#,
+        r#"{"type":"session.usage.updated","event_id":"e","usage":{"seconds":12,"active_seconds":null}}"#,
+        r#"{"type":"session.usage.updated","event_id":"e","usage":{"seconds":12,"paused_seconds":0.5}}"#,
+        r#"{"type":"session.paused"}"#,
+        r#"{"type":"session.resumed","event_id":null}"#,
     ] {
         assert!(codec.decode_server(bad).is_err(), "{bad}");
     }
@@ -97,7 +101,11 @@ fn inbound_fractional_timing_extensions_and_terminal_status_survive() {
     assert!(matches!(
         frame.event,
         ServerEvent::Closed {
-            usage: Usage { seconds: 3.5 },
+            usage: Usage {
+                seconds: 3.5,
+                active_seconds: None,
+                paused_seconds: None
+            },
             ..
         }
     ));

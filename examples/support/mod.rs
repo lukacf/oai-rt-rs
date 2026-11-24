@@ -34,10 +34,10 @@ pub struct Finalization {
 impl Finalization {
     pub fn finish(self) -> Result<ServerFrame> {
         if let Ok(frame) = &self.closed {
-            if let ServerEvent::Closed { usage, .. } = &frame.event {
+            if let ServerEvent::Closed { session, usage, .. } = &frame.event {
                 eprintln!(
                     "{}",
-                    json!({"final_usage_confirmed":true,"final_seconds":usage.seconds})
+                    json!({"final_usage_confirmed":true,"final_seconds":usage.seconds,"model":session.model})
                 );
             }
         }

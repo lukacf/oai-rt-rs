@@ -1554,7 +1554,7 @@ fn lifecycle_timestamps_and_stream_logprobs_use_strict_numbers() {
     };
     assert_eq!(response.created_at, 1_700_000_000.25);
     assert_eq!(response.completed_at, Field::Value(1_700_000_001.75));
-    assert!(response.output.is_empty());
+    assert_eq!(response.output.len(), 0);
     wire["response"]
         .as_object_mut()
         .unwrap()
@@ -1769,7 +1769,7 @@ fn overlapping_responses_preserve_bound_items_and_never_guess_new_owners() {
         ResponseAttribution::Ambiguous(vec![r1.clone(), r2.clone()])
     );
     for key in [&r1, &r2] {
-        assert!(tracker.calls(key).unwrap().is_empty());
+        assert_eq!(tracker.calls(key).unwrap().len(), 0);
         track_lifecycle(
             &mut tracker,
             Some("d"),

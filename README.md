@@ -1,10 +1,9 @@
 # Rust OpenAI Realtime and Live SDK
 
-A Rust client for the [OpenAI Realtime API](https://platform.openai.com/docs/guides/realtime).
-
-The separate [`oai_rt_rs::live` API](docs/live.md) supports the released
-`gpt-live-1` protocol, authenticated public transports, continuous audio, and
-delegated backend work. It does not route through Realtime or the private adapter.
+Use `oai_rt_rs::live::LiveClient` for full-duplex GPT-Live-1.1 conversations
+with delegated backend work. Use `oai_rt_rs::Realtime` for turn-based voice
+agents, streaming translation, or transcription. [Public Live guide](docs/live.md)
+and [OpenAI Realtime guide](https://developers.openai.com/api/docs/guides/realtime).
 
 [![Crates.io](https://img.shields.io/crates/v/oai-rt-rs.svg)](https://crates.io/crates/oai-rt-rs)
 [![Documentation](https://docs.rs/oai-rt-rs/badge.svg)](https://docs.rs/oai-rt-rs)
@@ -15,7 +14,7 @@ delegated backend work. It does not route through Realtime or the private adapte
 - GA-aligned Realtime API protocol models (WebSocket + REST).
 - GA-only behavior: beta headers/events are not supported (e.g., `response.output_item.created`).
 - Voice-first SDK with full-duplex audio streaming, VAD, and barge-in helpers.
-- GPT Realtime 2 support with configurable reasoning effort.
+- GPT Realtime 2.1 support with configurable reasoning effort.
 - First-class streaming translation and transcription session helpers.
 - Strongly typed `ClientEvent` and `ServerEvent` enums.
 - WebRTC SDP signaling, SIP control endpoints, and call hangup (low-level REST).
@@ -30,17 +29,68 @@ delegated backend work. It does not route through Realtime or the private adapte
 
 ```toml
 [dependencies]
-oai-rt-rs = "0.5.0"
+oai-rt-rs = "0.6.0"
 ```
 
-Use `oai_rt_rs::live::LiveClient` for public `gpt-live-1` primary WebSockets,
-WebRTC signaling, sideband control, stored recordings, forks and SIP controls.
-No feature flag is needed. Continuous voice, client delegation, and managed
-Responses are separate from the Realtime examples below.
+In 0.6.0, `live::SessionConfig::default()` selects `gpt-live-1.1` for new
+WebSocket, WebRTC and inbound SIP sessions. Forks inherit the source session's
+model. Existing applications can explicitly select `live::GPT_LIVE_1`.
+OpenAI supports both Live models. [GPT-Live model release](https://developers.openai.com/api/docs/changelog)
 
-The [public Live guide](docs/live.md) covers configuration, strict wire types,
-scoped function-call completion, explicit final usage, examples, and the
-documented provider/testing limitations.
+```rust,no_run
+use oai_rt_rs::live::{Field, LiveClient, LiveConnection, Result, SessionConfig};
+
+async fn open_order_session(key: &str) -> Result<LiveConnection> {
+    let client = LiveClient::new(key)?;
+    client.connect(SessionConfig {
+        instructions: Field::Value(
+            "Delegate to the backend when the caller asks for order status.".into(),
+        ),
+        ..SessionConfig::default()
+    }).await
+}
+```
+
+The [public Live guide](docs/live.md) covers WebRTC standby, client and
+Responses delegation, final usage, and runnable voice probes.
+
+## Migrating older Realtime voice models
+
+Realtime voice sessions now default to `gpt-realtime-2.1`. When an explicit
+model ID has a scheduled retirement, the crate sends the requested ID and
+emits a `tracing` warning with its shutdown date and replacement.
+[OpenAI deprecation schedule](https://developers.openai.com/api/docs/deprecations)
+
+| Model IDs in existing configuration | Shutdown | Replacement |
+| --- | --- | --- |
+| `gpt-realtime`, `gpt-realtime-2025-08-28`, `gpt-4o-realtime` | 2027-01-20 | `GPT_REALTIME_2_1` |
+| `gpt-realtime-mini`, `gpt-realtime-mini-2025-12-15`, `gpt-4o-mini-realtime` | 2027-01-20 | `GPT_REALTIME_2_1_MINI` |
+| `gpt-4o-mini-transcribe-2025-03-20` | 2027-01-20 | Move directly to `GPT_LIVE_TRANSCRIBE` for streaming or `GPT_TRANSCRIBE` for committed turns. The intermediate December 2025 snapshot also has a shutdown date. |
+| `whisper-1`, `gpt-4o-transcribe`, `gpt-4o-mini-transcribe`, `gpt-4o-mini-transcribe-2025-12-15`, `gpt-4o-transcribe-diarize` | 2027-02-26 | `GPT_LIVE_TRANSCRIBE` for streaming or `GPT_TRANSCRIBE` for committed turns over WebSocket. Check speaker-label requirements before moving a diarization workflow. |
+
+For browser Realtime sessions, replace `RealtimeRestAdapter::create_session`
+with `create_client_secret`. For transcription sessions, replace
+`create_transcription_session` with `create_transcription_client_secret`.
+For a trusted transcription WebSocket, the builder sends the GA
+`session.update` event with nested audio configuration. [Realtime transcription guide](https://developers.openai.com/api/docs/guides/realtime-transcription)
+
+### Rust source changes in 0.6
+
+- Add `..Default::default()` to explicit `live::SessionConfig` and
+  `InputAudioTranscription` literals to omit the new options. For explicit
+  `live::Usage` literals, set the new `active_seconds` and `paused_seconds`
+  fields to `None` if you only have the total.
+- Handle `Paused` and `Resumed` in exhaustive matches on `live::ServerEvent`.
+  The Realtime `ServerEvent` also has `TranscriptionSessionCreated` and
+  `TranscriptionSessionUpdated` variants carrying input-only session snapshots.
+- On transcription completion, both the protocol event and
+  `SdkEvent::InputTranscriptionCompleted` expose optional `languages` and
+  `Option<TranscriptionUsage>`. Handle `Tokens(usage)` and
+  `Duration { seconds }` independently when recording billing.
+
+The [vendored Realtime guides](docs/openai/) retain historical examples that
+use older model IDs. Use the migration table above when adapting them or
+consult the [current Realtime guide](https://developers.openai.com/api/docs/guides/realtime).
 
 ## Experimental GPT Live protocol
 
@@ -51,7 +101,7 @@ Enable the private GPT Live protocol surface explicitly:
 
 ```toml
 [dependencies]
-oai-rt-rs = { version = "0.5.0", features = ["experimental-gpt-live"] }
+oai-rt-rs = { version = "0.6.0", features = ["experimental-gpt-live"] }
 ```
 
 This feature is intentionally separate from the GA Realtime API. It provides
@@ -82,14 +132,16 @@ be used as billing, execution, or session authority.
 See [Experimental GPT Live protocol](docs/experimental-gpt-live.md) for the
 supported boundary and a client-delegation example.
 
-## Quickstart (Voice-first SDK)
+## Realtime voice quickstart
 
 ```rust
+use oai_rt_rs::Realtime;
+
 #[tokio::main]
 async fn main() -> oai_rt_rs::Result<()> {
     let mut session = Realtime::builder()
         .api_key("your-api-key")
-        .model(oai_rt_rs::GPT_REALTIME_2)
+        .model(oai_rt_rs::GPT_REALTIME_2_1)
         .voice_session()
         .voice("marin")
         .vad_server_default()
@@ -199,7 +251,7 @@ pub struct SumResp {
 # async fn demo() -> oai_rt_rs::Result<()> {
 let _session = Realtime::builder()
     .api_key("your-api-key")
-    .model(oai_rt_rs::GPT_REALTIME_2)
+    .model(oai_rt_rs::GPT_REALTIME_2_1)
     .voice_session()
     .tool_desc("sum", "Add two integers.", |args: SumArgs| async move {
         Ok(SumResp { sum: args.a + args.b })
@@ -244,8 +296,9 @@ async fn main() -> oai_rt_rs::Result<()> {
 ## Realtime translation
 
 Translation sessions use the dedicated `/v1/realtime/translations` WebSocket
-endpoint and the `gpt-realtime-translate` model. They stream continuously from
-incoming audio; do not call `response.create`.
+endpoint and the `gpt-realtime-translate` model. A browser sends its WebRTC SDP
+offer to `POST /v1/realtime/translations/calls` with a translation client
+secret. Translation begins when audio arrives. [Realtime translation guide](https://developers.openai.com/api/docs/guides/realtime-translation)
 
 ```rust
 use oai_rt_rs::{Realtime, SdkEvent};
@@ -281,20 +334,27 @@ while let Some(event) = session.next_event().await? {
 
 ## Realtime transcription
 
-Transcription sessions use `type: "transcription"` and default to
-`gpt-realtime-whisper` when using the high-level builder helper. The SDK uses
-the transcription WebSocket target (`/v1/realtime?intent=transcription`) and
-sends the initial `transcription_session.update` event for this session family.
+The transcription builder connects to `/v1/realtime?intent=transcription`
+and sends `session.update` with `session.type = "transcription"` and the model
+in `session.audio.input.transcription.model`. Its default is
+`gpt-realtime-whisper`. Select `GPT_LIVE_TRANSCRIBE` for streaming captions
+and commit turns from the client. Select `GPT_TRANSCRIBE` to begin
+transcription after each committed WebSocket turn. [Realtime transcription guide](https://developers.openai.com/api/docs/guides/realtime-transcription)
 
 ```rust
-use oai_rt_rs::Realtime;
+use oai_rt_rs::{GPT_LIVE_TRANSCRIBE, InputAudioTranscription, Realtime};
 
 # async fn demo() -> oai_rt_rs::Result<()> {
 let mut session = Realtime::transcription_builder()
     .api_key("your-api-key")
-    .transcription_language("en")
-    .transcription_prompt("Keywords: metoprolol, systolic")
-    .include_transcription_logprobs()
+    .transcription_config(InputAudioTranscription {
+        model: Some(GPT_LIVE_TRANSCRIBE.into()),
+        languages: Some(vec!["en".into(), "fr".into()]),
+        keywords: Some(vec!["metoprolol".into()]),
+        ..Default::default()
+    })
+    .manual_turn_detection()
+    .transcription_prompt("A conversation about blood pressure medication.")
     .connect_ws()
     .await?;
 
@@ -317,9 +377,9 @@ as advisory. For stronger instruction following, run an out-of-band Realtime
 text response after each committed audio turn with `conversation: "none"` and
 `output_modalities: ["text"]`.
 
-## Realtime 2 phases and preambles
+## Realtime phases and preambles
 
-`gpt-realtime-2` can produce intermediate commentary, including spoken
+`gpt-realtime-2.1` can produce intermediate commentary, including spoken
 preambles around tool use, before its final answer. Response output items expose
 this as `ResponsePhase::Commentary` or `ResponsePhase::FinalAnswer`, so apps can
 show or play short progress updates differently from final user-facing content.
@@ -413,7 +473,7 @@ use oai_rt_rs::protocol::models::{SessionConfig, SessionKind, OutputModalities};
 let rest = RealtimeRestAdapter::new("your-api-key")?;
 let session = SessionConfig::new(
     SessionKind::Realtime,
-    oai_rt_rs::GPT_REALTIME_2,
+    oai_rt_rs::GPT_REALTIME_2_1,
     OutputModalities::Audio,
 );
 

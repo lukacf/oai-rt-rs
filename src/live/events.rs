@@ -205,6 +205,20 @@ pub enum CallErrorType {
 pub struct Usage {
     /// Cumulative session seconds. Replace previous snapshots; never sum them.
     pub seconds: f64,
+    /// Billable whole seconds of active audio, including any unused prepaid duration.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "nonnull"
+    )]
+    pub active_seconds: Option<u64>,
+    /// Billable whole seconds of paused inference in an eligible WebRTC session.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "nonnull"
+    )]
+    pub paused_seconds: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -259,6 +273,12 @@ pub enum ServerEvent {
         event_id: String,
         session: SessionSnapshot,
     },
+    /// Speech woke inference, including the first time a WebRTC session wakes.
+    #[serde(rename = "session.resumed")]
+    Resumed { event_id: String },
+    /// Inference paused after the idle timeout. The WebRTC connection stays open.
+    #[serde(rename = "session.paused")]
+    Paused { event_id: String },
     #[serde(rename = "session.updated")]
     Updated {
         event_id: String,

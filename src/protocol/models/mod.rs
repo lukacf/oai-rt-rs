@@ -8,13 +8,13 @@ pub mod usage;
 
 pub use audio::{
     AudioConfig, AudioFormat, InputAudioConfig, InputAudioTranscription, NoiseReduction,
-    NoiseReductionType, OutputAudioConfig, TurnDetection,
+    NoiseReductionType, OutputAudioConfig, TranscriptionDelay, TurnDetection,
 };
 pub use common::{
-    ArbitraryJson, DEFAULT_MODEL, Eagerness, GPT_REALTIME_2, GPT_REALTIME_TRANSLATE,
-    GPT_REALTIME_WHISPER, Infinite, ItemStatus, JsonSchema, MaxTokens, Metadata, Modality,
-    Nullable, OutputModalities, PromptRef, ReasoningConfig, ReasoningEffort, ResponsePhase, Role,
-    Temperature, TemperatureError, Voice,
+    ArbitraryJson, DEFAULT_MODEL, Eagerness, GPT_LIVE_TRANSCRIBE, GPT_REALTIME_2, GPT_REALTIME_2_1,
+    GPT_REALTIME_2_1_MINI, GPT_REALTIME_TRANSLATE, GPT_REALTIME_WHISPER, GPT_TRANSCRIBE, Infinite,
+    ItemStatus, JsonSchema, MaxTokens, Metadata, Modality, Nullable, OutputModalities, PromptRef,
+    ReasoningConfig, ReasoningEffort, ResponsePhase, Role, Temperature, TemperatureError, Voice,
 };
 pub use items::{AudioPartFormat, ContentPart, Item};
 pub use response::{
@@ -22,14 +22,17 @@ pub use response::{
 };
 pub use session::{
     RetentionRatioTruncation, Session, SessionConfig, SessionKind, SessionUpdate,
-    SessionUpdateConfig, TokenLimits, Tracing, TracingAuto, TracingConfig,
+    SessionUpdateConfig, TokenLimits, Tracing, TracingAuto, TracingConfig, TranscriptionSession,
     TranscriptionSessionUpdateConfig, Truncation, TruncationStrategy, TruncationType,
 };
 pub use tools::{
     ApprovalFilter, ApprovalMode, McpError, McpToolConfig, McpToolInfo, RequireApproval, Tool,
     ToolChoice, ToolChoiceMode,
 };
-pub use usage::{CachedTokenDetails, InputTokenDetails, OutputTokenDetails, Usage};
+pub use usage::{
+    CachedTokenDetails, InputTokenDetails, OutputTokenDetails, TranscriptionLanguage,
+    TranscriptionUsage, Usage,
+};
 
 #[cfg(test)]
 mod tests {

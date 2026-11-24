@@ -9,6 +9,10 @@ pub enum ClientEvent {
         event_id: Option<String>,
         session: Box<SessionUpdate>,
     },
+    #[deprecated(
+        since = "0.6.0",
+        note = "Use ClientEvent::SessionUpdate with SessionKind::Transcription and nested audio.input configuration."
+    )]
     #[serde(rename = "transcription_session.update")]
     TranscriptionSessionUpdate {
         #[serde(skip_serializing_if = "Option::is_none")]

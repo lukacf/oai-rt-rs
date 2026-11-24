@@ -31,7 +31,7 @@ async fn main() -> Result<()> {
     let client = LiveClient::new(&key)?;
     let mut connection = client.connect(SessionConfig {
         instructions: Field::Value(
-            "This is a synthetic order lookup test. When asked to look up any order, delegate to the client. Do not invent the result. When the client returns the result, say exactly: The test order is ready for pickup.".into(),
+            "This is a synthetic order lookup test. Delegate order status requests to the backend. When the backend returns the verified pickup update, read that update aloud verbatim.".into(),
         ),
         ..SessionConfig::default()
     }).await?;

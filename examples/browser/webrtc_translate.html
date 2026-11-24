@@ -432,7 +432,7 @@ audio { display: none; }
   </div>
 
 <script>
-const REALTIME_TRANSLATIONS_URL = "https://api.openai.com/v1/realtime/translations";
+const TRANSLATION_CALLS_URL = "https://api.openai.com/v1/realtime/translations/calls";
 const DEMO = new URLSearchParams(location.search).has("demo");
 
 let pc, dc, localStream;
@@ -507,7 +507,7 @@ $("start").onclick = async () => {
 
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
-    const answerSdp = await fetchText(REALTIME_TRANSLATIONS_URL, {
+    const answerSdp = await fetchText(TRANSLATION_CALLS_URL, {
       method: "POST",
       body: offer.sdp,
       headers: {

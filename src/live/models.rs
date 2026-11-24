@@ -2,8 +2,10 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Map, Value};
 use std::fmt;
 
-/// Released public Live voice model.
+/// Original public Live model for applications that pin its behavior.
 pub const GPT_LIVE_1: &str = "gpt-live-1";
+/// Default full-duplex model for the public Live API.
+pub const GPT_LIVE_1_1: &str = "gpt-live-1.1";
 
 /// A nullable optional field. Unlike `Option`, omission and explicit JSON null
 /// remain distinct, including in sparse updates.
@@ -98,19 +100,79 @@ pub struct SessionConfig {
         deserialize_with = "nonnull"
     )]
     pub store: Option<bool>,
+    /// On WebRTC creation, wait for speech before starting inference.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "nonnull"
+    )]
+    pub wake_policy: Option<WakePolicy>,
+    /// With a speech wake policy, pause after 5-60 seconds without a transcript.
+    /// Omit to keep inference active after the first wake.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "nonnull"
+    )]
+    pub idle_timeout_s: Option<u8>,
 }
 
 impl Default for SessionConfig {
     fn default() -> Self {
         Self {
-            model: GPT_LIVE_1.into(),
+            model: GPT_LIVE_1_1.into(),
             audio: None,
             client: None,
             delegation: Field::Absent,
             input: None,
             instructions: Field::Absent,
             store: None,
+            wake_policy: None,
+            idle_timeout_s: None,
         }
+    }
+}
+
+/// How a WebRTC session begins or resumes inference.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum WakePolicy {
+    Speech {
+        /// Defaults to 0.5. Higher values require stronger evidence of speech.
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "nonnull"
+        )]
+        vad_threshold: Option<VadThreshold>,
+    },
+}
+
+/// Voice activity threshold for the first wake and each later wake, from 0 to 1.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "f64")]
+pub struct VadThreshold(f64);
+
+// Construction and deserialization both reject NaN, so equality is reflexive.
+impl Eq for VadThreshold {}
+
+impl TryFrom<f64> for VadThreshold {
+    type Error = super::Error;
+
+    fn try_from(value: f64) -> Result<Self, Self::Error> {
+        if (0.0..=1.0).contains(&value) {
+            Ok(Self(value))
+        } else {
+            Err(super::Error::Invalid(
+                "vad_threshold must be between 0 and 1".into(),
+            ))
+        }
+    }
+}
+
+impl From<VadThreshold> for f64 {
+    fn from(value: VadThreshold) -> Self {
+        value.0
     }
 }
 
@@ -167,9 +229,44 @@ pub enum Voice {
 
 /// The names enumerated by the released Live schema (the default is `marin`).
 pub const VOICES: &[&str] = &[
-    "alloy", "ash", "ballad", "beacon", "bossa", "cedar", "cinder", "coral", "delta", "echo",
-    "gleam", "marin", "meridian", "quartz", "ripple", "sage", "shimmer", "stone", "tempo", "verse",
-    "vesper", "willow",
+    "alloy",
+    "ash",
+    "ballad",
+    "beacon",
+    "bossa",
+    "brise",
+    "calandria",
+    "cedar",
+    "cinder",
+    "compas",
+    "coral",
+    "delta",
+    "destello",
+    "echo",
+    "flitz",
+    "gleam",
+    "halo",
+    "harema",
+    "hornero",
+    "juni",
+    "luciernaga",
+    "marin",
+    "meridian",
+    "nira",
+    "noeul",
+    "nuri",
+    "pearl",
+    "quartz",
+    "ripple",
+    "sage",
+    "shida",
+    "shimmer",
+    "sillage",
+    "stone",
+    "tempo",
+    "verse",
+    "vesper",
+    "willow",
 ];
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

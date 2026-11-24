@@ -2,7 +2,7 @@ use crate::error::Result;
 use crate::protocol::models::{
     AudioConfig, AudioFormat, InputAudioTranscription, MaxTokens, Modality, NoiseReduction,
     Nullable, PromptRef, ReasoningConfig, Session, SessionConfig, SessionKind, Temperature, Tool,
-    ToolChoice, Tracing, Truncation, TurnDetection, Voice,
+    ToolChoice, Tracing, TranscriptionSession, Truncation, TurnDetection, Voice,
 };
 use reqwest::{
     Client, RequestBuilder,
@@ -15,11 +15,14 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EphemeralSecretResponse {
+pub struct EphemeralSecretResponse<S = Session> {
     pub value: String,
     pub expires_at: u64,
-    pub session: Session,
+    pub session: S,
 }
+
+/// GA client secret and the input-only transcription session supplied by the server.
+pub type TranscriptionClientSecretResponse = EphemeralSecretResponse<TranscriptionSession>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TranslationSession {
@@ -63,8 +66,8 @@ pub struct ExpiresAfter {
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct CreateClientSecretRequest {
-    pub session: SessionConfig,
+struct CreateClientSecretRequest<S> {
+    pub session: S,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_after: Option<ExpiresAfter>,
 }
@@ -258,7 +261,8 @@ impl RealtimeRestAdapter {
         })
     }
 
-    /// Create an ephemeral client secret for browser usage (GA).
+    /// Create a GA speech conversation client secret through `/v1/realtime/client_secrets`.
+    /// For input-only transcription use [`Self::create_transcription_client_secret`].
     ///
     /// # Errors
     /// Returns an error if the HTTP request fails.
@@ -297,7 +301,57 @@ impl RealtimeRestAdapter {
                 "client_secrets only supports realtime sessions".to_string(),
             ));
         }
+        session.warn_if_retiring_models();
 
+        self.issue_client_secret(session, expires_after, safety_identifier)
+            .await
+    }
+
+    /// Create a GA transcription client secret through `/v1/realtime/client_secrets`.
+    /// The request uses `type: "transcription"` and the model in `audio.input.transcription`.
+    ///
+    /// # Errors
+    /// Returns an error for a different session kind or an unsuccessful HTTP request.
+    pub async fn create_transcription_client_secret(
+        &self,
+        session: SessionConfig,
+    ) -> Result<TranscriptionClientSecretResponse> {
+        self.create_transcription_client_secret_with_expiry_and_safety_identifier(
+            session, None, None,
+        )
+        .await
+    }
+
+    /// Create a GA transcription client secret with optional expiry and safety identifier.
+    ///
+    /// # Errors
+    /// Returns an error for a different session kind, an invalid header, or an unsuccessful request.
+    pub async fn create_transcription_client_secret_with_expiry_and_safety_identifier(
+        &self,
+        session: SessionConfig,
+        expires_after: Option<ExpiresAfter>,
+        safety_identifier: Option<&str>,
+    ) -> Result<TranscriptionClientSecretResponse> {
+        if session.kind != SessionKind::Transcription {
+            return Err(crate::error::Error::InvalidClientEvent(
+                "expected a transcription session for a transcription client secret".to_string(),
+            ));
+        }
+        session.warn_if_retiring_models();
+        self.issue_client_secret(
+            session.transcription_update(),
+            expires_after,
+            safety_identifier,
+        )
+        .await
+    }
+
+    async fn issue_client_secret<S: Serialize, T: serde::de::DeserializeOwned>(
+        &self,
+        session: S,
+        expires_after: Option<ExpiresAfter>,
+        safety_identifier: Option<&str>,
+    ) -> Result<EphemeralSecretResponse<T>> {
         let req = self
             .authorized(self.client.post(format!("{BASE_URL}/client_secrets")))
             .json(&CreateClientSecretRequest {
@@ -316,6 +370,11 @@ impl RealtimeRestAdapter {
     ///
     /// # Errors
     /// Returns an error if the HTTP request fails.
+    #[deprecated(
+        since = "0.6.0",
+        note = "Use create_client_secret for GA credentials at /v1/realtime/client_secrets."
+    )]
+    #[allow(deprecated)] // Preserve the legacy endpoint and response for existing callers.
     pub async fn create_session(&self, session: SessionConfig) -> Result<RealtimeSessionResponse> {
         self.create_session_with_safety_identifier(session, None)
             .await
@@ -325,6 +384,10 @@ impl RealtimeRestAdapter {
     ///
     /// # Errors
     /// Returns an error if the HTTP request fails.
+    #[deprecated(
+        since = "0.6.0",
+        note = "Use create_client_secret_with_expiry_and_safety_identifier for GA credentials."
+    )]
     pub async fn create_session_with_safety_identifier(
         &self,
         session: SessionConfig,
@@ -335,6 +398,7 @@ impl RealtimeRestAdapter {
                 "sessions only supports realtime sessions".to_string(),
             ));
         }
+        session.warn_if_retiring_models();
 
         let req = self
             .authorized(self.client.post(format!("{BASE_URL}/sessions")))
@@ -374,6 +438,7 @@ impl RealtimeRestAdapter {
                 "translation client_secrets only supports translation sessions".to_string(),
             ));
         }
+        session.warn_if_retiring_models();
 
         let req = self
             .authorized(
@@ -396,6 +461,11 @@ impl RealtimeRestAdapter {
     ///
     /// # Errors
     /// Returns an error if the HTTP request fails.
+    #[deprecated(
+        since = "0.6.0",
+        note = "Use create_transcription_client_secret for GA credentials at /v1/realtime/client_secrets."
+    )]
+    #[allow(deprecated)] // Preserve the legacy endpoint and response for existing callers.
     pub async fn create_transcription_session(
         &self,
         session: SessionConfig,
@@ -408,6 +478,10 @@ impl RealtimeRestAdapter {
     ///
     /// # Errors
     /// Returns an error if the HTTP request fails.
+    #[deprecated(
+        since = "0.6.0",
+        note = "Use create_transcription_client_secret_with_expiry_and_safety_identifier for GA credentials."
+    )]
     pub async fn create_transcription_session_with_safety_identifier(
         &self,
         session: SessionConfig,
@@ -418,6 +492,7 @@ impl RealtimeRestAdapter {
                 "transcription_sessions only supports transcription sessions".to_string(),
             ));
         }
+        session.warn_if_retiring_models();
 
         let req = self
             .authorized(
@@ -526,6 +601,7 @@ impl RealtimeRestAdapter {
         let mut form = multipart::Form::new().part("sdp", sdp_part);
 
         if let Some(s) = session {
+            s.warn_if_retiring_models();
             let session_part = multipart::Part::text(serde_json::to_string(&s)?)
                 .mime_str("application/json")
                 .map_err(|e| crate::error::Error::Mime(e.to_string()))?;
@@ -557,6 +633,7 @@ impl RealtimeRestAdapter {
                 "sip.accept only supports realtime sessions".to_string(),
             ));
         }
+        session.warn_if_retiring_models();
 
         self.authorized(self.client.post(&url))
             .json(&session)
@@ -660,6 +737,54 @@ mod tests {
         OutputAudioConfig, OutputModalities, ReasoningEffort, ToolChoiceMode,
     };
     use serde_json::json;
+
+    #[test]
+    fn transcription_client_secret_uses_ga_request_and_response_shapes() {
+        let session = SessionConfig::new(
+            SessionKind::Transcription,
+            "gpt-live-transcribe",
+            OutputModalities::Audio,
+        );
+        let request = CreateClientSecretRequest {
+            session: session.transcription_update(),
+            expires_after: Some(ExpiresAfter {
+                anchor: "created_at".into(),
+                seconds: 600,
+            }),
+        };
+        assert_eq!(
+            serde_json::to_value(request).unwrap(),
+            json!({
+                "session": {"type": "transcription", "audio": {"input": {
+                    "transcription": {"model": "gpt-live-transcribe"}
+                }}},
+                "expires_after": {"anchor": "created_at", "seconds": 600}
+            })
+        );
+        let secret: TranscriptionClientSecretResponse = serde_json::from_value(json!({
+            "value":"test-secret","expires_at":123,"session":{
+                "type":"transcription","object":"realtime.transcription_session","id":"session_id",
+                "audio":{"input":{"format":{"type":"audio/pcm","rate":24000},"transcription":{
+                    "model":"gpt-live-transcribe","languages":["en","fr"],"keywords":["billing"],"delay":"low"
+                }}}
+            }
+        }))
+        .unwrap();
+        assert_eq!(secret.session.id, "session_id");
+        assert_eq!(secret.session.expires_at, None);
+        let transcription = secret
+            .session
+            .audio
+            .unwrap()
+            .input
+            .unwrap()
+            .transcription
+            .unwrap();
+        let settings = transcription.as_ref().unwrap();
+        assert_eq!(settings.languages.as_deref().unwrap(), ["en", "fr"]);
+        assert_eq!(settings.keywords.as_deref().unwrap(), ["billing"]);
+        assert_eq!(settings.delay, Some(crate::TranscriptionDelay::Low));
+    }
 
     #[test]
     fn safety_identifier_header_can_be_added_to_call_requests() {

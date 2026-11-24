@@ -84,13 +84,13 @@ async fn send(ws: &mut Peer, value: Value) {
 }
 
 fn snapshot() -> Value {
-    json!({"id":"live_test","model":"gpt-live-1","status":"active","expires_at":12345.5})
+    json!({"id":"live_test","model":"gpt-live-1.1","status":"active","expires_at":12345.5})
 }
 
 async fn started(ws: &mut Peer) {
     assert_eq!(
         recv(ws).await,
-        json!({"type":"session.start","session":{"model":"gpt-live-1"}})
+        json!({"type":"session.start","session":{"model":"gpt-live-1.1"}})
     );
     send(
         ws,
@@ -179,7 +179,7 @@ async fn startup_gates_commands_and_graceful_close_preserves_every_event() {
     assert!(matches!(
         final_frame.event,
         ServerEvent::Closed {
-            usage: Usage { seconds: 2.5 },
+            usage: Usage { seconds: 2.5, .. },
             ..
         }
     ));
@@ -324,6 +324,80 @@ async fn sideband_has_no_startup_command_and_reflected_audio_is_not_send_permiss
         Some("context")
     );
     connection.close(WAIT, |_| Ok(())).await.unwrap();
+    peer.await.unwrap();
+}
+
+#[tokio::test]
+async fn sideband_delivers_standby_lifecycle_and_final_usage() {
+    let (client, peer) = server(|mut ws| async move {
+        for (kind, id) in [("session.resumed", "first"), ("session.paused", "idle")] {
+            send(&mut ws, json!({"type": kind, "event_id": id})).await;
+        }
+        send(
+            &mut ws,
+            json!({
+                "type": "session.usage.updated",
+                "event_id": "u",
+                "usage": {"seconds": 20, "active_seconds": 15, "paused_seconds": 5}
+            }),
+        )
+        .await;
+        send(
+            &mut ws,
+            json!({"type": "session.resumed", "event_id": "again"}),
+        )
+        .await;
+        assert_eq!(recv(&mut ws).await["type"], "session.close");
+        send(
+            &mut ws,
+            json!({
+                "type": "session.closed",
+                "event_id": "c",
+                "reason": "close_requested",
+                "session": snapshot(),
+                "usage": {"seconds": 24, "active_seconds": 19, "paused_seconds": 5}
+            }),
+        )
+        .await;
+    })
+    .await;
+    let mut connection = client.attach("live_test").await.unwrap();
+    assert!(
+        matches!(connection.next_event().await.unwrap().unwrap().event,
+        ServerEvent::Resumed { event_id } if event_id == "first")
+    );
+    assert!(
+        matches!(connection.next_event().await.unwrap().unwrap().event,
+        ServerEvent::Paused { event_id } if event_id == "idle")
+    );
+    assert_eq!(connection.sender().phase(), SessionPhase::Active);
+    assert!(matches!(
+        connection.next_event().await.unwrap().unwrap().event,
+        ServerEvent::UsageUpdated {
+            usage: Usage {
+                seconds: 20.0,
+                active_seconds: Some(15),
+                paused_seconds: Some(5)
+            },
+            ..
+        }
+    ));
+    assert!(
+        matches!(connection.next_event().await.unwrap().unwrap().event,
+        ServerEvent::Resumed { event_id } if event_id == "again")
+    );
+    let receipt = connection.close(WAIT, |_| Ok(())).await.unwrap();
+    assert!(matches!(
+        receipt.event,
+        ServerEvent::Closed {
+            usage: Usage {
+                seconds: 24.0,
+                active_seconds: Some(19),
+                paused_seconds: Some(5)
+            },
+            ..
+        }
+    ));
     peer.await.unwrap();
 }
 

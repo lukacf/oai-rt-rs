@@ -17,8 +17,8 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, StreamConfig};
 use futures::StreamExt;
 use oai_rt_rs::{
-    ClientEvent, GPT_REALTIME_2, GPT_REALTIME_WHISPER, Realtime, ReasoningEffort, Result, SdkEvent,
-    ServerError, ServerEvent, SessionHandle, ToolChoice, ToolChoiceMode,
+    ClientEvent, GPT_REALTIME_2_1, GPT_REALTIME_WHISPER, Realtime, ReasoningEffort, Result,
+    SdkEvent, ServerError, ServerEvent, SessionHandle, ToolChoice, ToolChoiceMode,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -47,13 +47,13 @@ async fn main() -> Result<()> {
         oai_rt_rs::Error::InvalidClientEvent("OPENAI_API_KEY must be set".to_string())
     })?;
 
-    println!("connecting to {GPT_REALTIME_2} voice session...");
+    println!("connecting to {GPT_REALTIME_2_1} voice session...");
     println!(
         "audio note: this WebSocket demo is headset-first. It does not provide acoustic echo cancellation; use headphones, or use the browser WebRTC example for speakerphone-style full duplex."
     );
     let mut session = Realtime::builder()
         .api_key(api_key)
-        .model(GPT_REALTIME_2)
+        .model(GPT_REALTIME_2_1)
         .tool_choice(ToolChoice::Mode(ToolChoiceMode::Auto))
         .voice_session()
         .voice("marin")

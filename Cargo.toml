@@ -1,6 +1,6 @@
 [package]
 name = "oai-rt-rs"
-version = "0.5.1"
+version = "0.6.0"
 edition = "2024"
 rust-version = "1.85.0"
 authors = ["Luka Crnkovic-Friis"]
@@ -8,7 +8,6 @@ description = "Rust SDK for the OpenAI Realtime and Live APIs"
 license = "MIT"
 repository = "https://github.com/lukacf/oai-rt-rs"
 documentation = "https://docs.rs/oai-rt-rs"
-homepage = "https://github.com/lukacf/oai-rt-rs"
 readme = "README.md"
 keywords = ["openai", "realtime", "live", "api", "audio"]
 categories = ["api-bindings", "asynchronous"]
@@ -34,7 +33,7 @@ reqwest = { version = "0.12.28", default-features = false, features = [
     "macos-system-configuration",
 ] }
 thiserror = "2.0"
-url = "2.5"
+url = "2.5.9"
 tracing = "0.1"
 async-trait = "0.1"
 

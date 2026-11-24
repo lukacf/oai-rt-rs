@@ -304,7 +304,7 @@ fn test_transcription_session_update_serializes_whisper_and_include_logprobs() {
                         transcription: Some(Nullable::Value(InputAudioTranscription {
                             model: Some(GPT_REALTIME_WHISPER.to_string()),
                             language: Some("en".to_string()),
-                            prompt: None,
+                            ..InputAudioTranscription::default()
                         })),
                         noise_reduction: None,
                     }),
@@ -331,6 +331,7 @@ fn test_transcription_session_update_serializes_whisper_and_include_logprobs() {
 }
 
 #[test]
+#[allow(deprecated)] // Preserve the wire format for explicit legacy callers.
 fn test_transcription_session_update_event_serializes_flat_payload() {
     let event = ClientEvent::TranscriptionSessionUpdate {
         event_id: None,
@@ -340,6 +341,7 @@ fn test_transcription_session_update_event_serializes_flat_payload() {
                 model: Some(GPT_REALTIME_WHISPER.to_string()),
                 language: Some("en".to_string()),
                 prompt: Some("Keywords: systolic, diastolic".to_string()),
+                ..InputAudioTranscription::default()
             })),
             turn_detection: Some(Nullable::Value(TurnDetection::ServerVad {
                 threshold: Some(0.5),
@@ -381,6 +383,32 @@ fn test_transcription_session_update_event_serializes_flat_payload() {
         serialized.get("model").is_none(),
         "transcription_session.update must not send top-level voice model"
     );
+}
+
+#[test]
+fn ga_transcription_session_lifecycle_events_are_typed() {
+    for event_type in ["session.created", "session.updated"] {
+        let wire = json!({
+            "type": event_type, "event_id": "event_1",
+            "session": {
+                "type": "transcription", "id": "session_id", "object": "realtime.transcription_session",
+                "audio": {"input": {"transcription": {"model":"gpt-live-transcribe"}}}
+            }
+        });
+        let event: ServerEvent = serde_json::from_value(wire.clone()).unwrap();
+        assert!(matches!(
+            (&event, event_type),
+            (
+                ServerEvent::TranscriptionSessionCreated { .. },
+                "session.created"
+            ) | (
+                ServerEvent::TranscriptionSessionUpdated { .. },
+                "session.updated"
+            )
+        ));
+        assert_eq!(event.event_id(), Some("event_1"));
+        assert_eq!(serde_json::to_value(event).unwrap(), wire);
+    }
 }
 
 #[test]
@@ -436,8 +464,7 @@ fn test_session_update_omits_nested_audio_turn_detection_null_fields() {
                         })),
                         transcription: Some(Nullable::Value(InputAudioTranscription {
                             model: Some("gpt-4o-mini-transcribe".to_string()),
-                            language: None,
-                            prompt: None,
+                            ..InputAudioTranscription::default()
                         })),
                         noise_reduction: None,
                     }),

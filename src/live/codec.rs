@@ -277,6 +277,9 @@ impl SessionConfig {
         if self.model.is_empty() {
             return Err(Error::Invalid("model is required".into()));
         }
+        if self.idle_timeout_s.is_some_and(|s| !(5..=60).contains(&s)) {
+            return Err(Error::Invalid("idle_timeout_s must be 5 through 60".into()));
+        }
         if let Some(audio) = &self.audio {
             if let Some(format) = audio.format {
                 format.validate()?;
@@ -329,6 +332,15 @@ impl SessionConfig {
             responses.options.validate()?;
         }
         Ok(())
+    }
+
+    pub(super) fn validate_without_standby(&self) -> Result<()> {
+        if self.wake_policy.is_some() || self.idle_timeout_s.is_some() {
+            return Err(Error::Invalid(
+                "standby settings are available when creating a WebRTC session".into(),
+            ));
+        }
+        self.validate()
     }
 
     #[must_use]
@@ -452,7 +464,7 @@ impl ClientEvent {
             length(id, 0, 512)?;
         }
         match &self.command {
-            Command::Start { session } => session.validate(),
+            Command::Start { session } => session.validate_without_standby(),
             Command::Update { session } => {
                 if let Field::Value(DelegationUpdate::Responses {
                     responses: Some(responses),

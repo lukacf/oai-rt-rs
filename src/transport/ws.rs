@@ -118,6 +118,11 @@ pub async fn connect_with_options(
     options: WsConnectOptions<'_>,
 ) -> Result<WsStream> {
     let url = ws_url_for_options(&options)?;
+    if options.call_id.is_none() && options.target != WsConnectTarget::Transcription {
+        if let Some(model) = options.model {
+            crate::protocol::models::common::warn_if_retiring_model(model);
+        }
+    }
     let auth_header = HeaderValue::from_str(&format!("Bearer {api_key}"))?;
 
     let mut req = tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(
@@ -197,6 +202,8 @@ mod tests {
 
     #[test]
     fn realtime_url_keeps_model_or_call_id_routing() {
+        let default = ws_url_for_options(&WsConnectOptions::default()).expect("default URL");
+        assert_eq!(default.query(), Some("model=gpt-realtime-2.1"));
         let url = ws_url_for_options(&WsConnectOptions {
             model: Some("gpt-realtime-2"),
             ..WsConnectOptions::default()
