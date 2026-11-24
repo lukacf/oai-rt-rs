@@ -106,7 +106,10 @@ async fn realtime_live_rest_endpoints_accept_current_session_shapes() -> Result<
             None,
         )
         .await?;
-    assert!(!transcription.session.id.is_empty());
+    assert!(
+        !transcription.session.id.is_empty(),
+        "missing transcription session ID"
+    );
     rest.create_translation_client_secret_with_expiry_and_safety_identifier(
         translation_config(),
         Some(short_expiry()),

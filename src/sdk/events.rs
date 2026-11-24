@@ -122,8 +122,7 @@ impl Stream for EventStream<'_> {
     type Item = SdkEvent;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = self.get_mut();
-        Pin::new(&mut this.rx).poll_recv(cx)
+        self.get_mut().rx.poll_recv(cx)
     }
 }
 

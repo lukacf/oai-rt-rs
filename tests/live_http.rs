@@ -164,7 +164,7 @@ async fn every_call_control_uses_exact_public_path_body_and_empty_success() {
         serde_json::from_slice::<Value>(&captured[2].body).unwrap(),
         json!({"target_uri":"sip:agent@example.com"})
     );
-    assert!(captured[3].body.is_empty());
+    assert_eq!(captured[3].body.len(), 0);
     drop(captured);
 }
 
@@ -593,6 +593,6 @@ async fn recording_download_streams_bytes_and_enforces_caller_limit() {
     for captured in mock.data.captured.lock().unwrap().iter() {
         assert_eq!(captured.method, "GET");
         assert_eq!(captured.path, "/v1/live/sessions/live_stored/content");
-        assert!(captured.body.is_empty());
+        assert_eq!(captured.body.len(), 0);
     }
 }

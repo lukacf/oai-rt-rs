@@ -54,7 +54,7 @@ async fn incomplete_rejection_body_keeps_headers_after_the_body_deadline() {
             assert_eq!(headers["content-length"], "7");
             assert_eq!(request_id.as_deref(), Some("req-upgrade"));
             assert_eq!(retry_after.as_deref(), Some("4"));
-            assert!(body.is_empty());
+            assert_eq!(body.len(), 0);
             assert_eq!(body_issue, Some(HttpBodyIssue::ReadFailed));
         }
         other => panic!("lost upgrade HTTP metadata: {other:?}"),

@@ -8,7 +8,6 @@ description = "Rust SDK for the OpenAI Realtime and Live APIs"
 license = "MIT"
 repository = "https://github.com/lukacf/oai-rt-rs"
 documentation = "https://docs.rs/oai-rt-rs"
-homepage = "https://github.com/lukacf/oai-rt-rs"
 readme = "README.md"
 keywords = ["openai", "realtime", "live", "api", "audio"]
 categories = ["api-bindings", "asynchronous"]

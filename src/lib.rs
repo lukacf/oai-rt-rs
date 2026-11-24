@@ -402,7 +402,7 @@ pub struct RealtimeReceiver {
 
 impl RealtimeReceiver {
     /// Exposes an asynchronous stream of `Result<ServerEvent>` that preserves Errors.
-    #[must_use]
+    #[must_use = "poll the stream to receive Realtime events"]
     #[allow(clippy::result_large_err)]
     pub fn try_into_stream(self) -> BoxStream<'static, Result<ServerEvent>> {
         self.read
