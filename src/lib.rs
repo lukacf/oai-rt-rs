@@ -17,15 +17,17 @@ pub use error::{ApiErrorType, Error, Result, ServerError};
 pub use protocol::client_events::ClientEvent;
 pub use protocol::models::{
     ApprovalFilter, ApprovalMode, AudioConfig, AudioFormat, CachedTokenDetails, ContentPart,
-    ConversationMode, DEFAULT_MODEL, Eagerness, GPT_REALTIME_2, GPT_REALTIME_TRANSLATE,
-    GPT_REALTIME_WHISPER, Infinite, InputAudioConfig, InputAudioTranscription, InputItem,
+    ConversationMode, DEFAULT_MODEL, Eagerness, GPT_LIVE_TRANSCRIBE, GPT_REALTIME_2,
+    GPT_REALTIME_2_1, GPT_REALTIME_2_1_MINI, GPT_REALTIME_TRANSLATE, GPT_REALTIME_WHISPER,
+    GPT_TRANSCRIBE, Infinite, InputAudioConfig, InputAudioTranscription, InputItem,
     InputTokenDetails, Item, ItemStatus, MaxTokens, McpError, McpToolConfig, McpToolInfo, Modality,
     NoiseReduction, NoiseReductionType, OutputAudioConfig, OutputModalities, OutputTokenDetails,
     PromptRef, ReasoningConfig, ReasoningEffort, RequireApproval, Response, ResponseConfig,
     ResponsePhase, ResponseStatus, RetentionRatioTruncation, Role, Session, SessionConfig,
     SessionKind, SessionUpdate, SessionUpdateConfig, Temperature, TokenLimits, Tool, ToolChoice,
-    ToolChoiceMode, Tracing, TracingAuto, TracingConfig, TranscriptionSessionUpdateConfig,
-    Truncation, TruncationStrategy, TruncationType, Usage, Voice,
+    ToolChoiceMode, Tracing, TracingAuto, TracingConfig, TranscriptionDelay, TranscriptionLanguage,
+    TranscriptionSession, TranscriptionSessionUpdateConfig, TranscriptionUsage, Truncation,
+    TruncationStrategy, TruncationType, Usage, Voice,
 };
 pub use protocol::server_events::ServerEvent;
 pub use sdk::{
@@ -237,6 +239,7 @@ fn validate_client_event(event: &ClientEvent) -> Result<()> {
         ClientEvent::SessionUpdate { session, .. } => {
             validate_session_update(session.as_ref())?;
         }
+        #[allow(deprecated)] // Preserve validation for explicit legacy events.
         ClientEvent::TranscriptionSessionUpdate { session, .. } => {
             validate_transcription_session_update(session.as_ref())?;
         }
@@ -255,6 +258,7 @@ fn validate_client_event(event: &ClientEvent) -> Result<()> {
 fn validate_transcription_session_update(
     config: &models::TranscriptionSessionUpdateConfig,
 ) -> Result<()> {
+    models::audio::warn_if_retiring_transcription(config.input_audio_transcription.as_ref());
     if let Some(format) = &config.input_audio_format {
         validate_audio_format(format)?;
     }
@@ -264,6 +268,7 @@ fn validate_transcription_session_update(
 #[allow(clippy::result_large_err)]
 fn validate_session_update(session: &models::SessionUpdate) -> Result<()> {
     let config = &session.config;
+    models::audio::warn_if_retiring_transcription(config.input_audio_transcription.as_ref());
     if let Some(format) = &config.input_audio_format {
         validate_audio_format(format)?;
     }
@@ -318,6 +323,7 @@ fn validate_audio_config(audio: &models::AudioConfig) -> Result<()> {
 
 #[allow(clippy::result_large_err)]
 fn validate_input_audio_config(audio: &models::InputAudioConfig) -> Result<()> {
+    models::audio::warn_if_retiring_transcription(audio.transcription.as_ref());
     if let Some(format) = &audio.format {
         validate_audio_format(format)?;
     }

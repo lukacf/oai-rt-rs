@@ -16,7 +16,7 @@ use tokio::time::{Instant, timeout};
 
 fn config(diagnostic: bool) -> SessionConfig {
     SessionConfig {
-        instructions: Field::Value("This is a synthetic integration test. Wait for the backend result NATIVE_BLUE_SEVEN, then say exactly: The blue test passed. Do not report success before the backend finishes.".into()),
+        instructions: Field::Value("This is a synthetic echo test. The backend runs the echo check. Wait for its result. When it returns NATIVE_BLUE_SEVEN, say exactly 'The blue test passed.'".into()),
         delegation: Field::Value(DelegationConfig::Responses {
             responses: ResponsesConfig {
                 model: "gpt-5.5".into(),
@@ -795,7 +795,7 @@ mod exercise_tests {
     }
 
     async fn mock_backend(mut peer: Peer, injected: u8) {
-        let session = json!({"id":"s","model":"gpt-live-1","status":"active","expires_at":1});
+        let session = json!({"id":"s","model":"gpt-live-1.1","status":"active","expires_at":1});
         receive(&mut peer).await;
         emit(
             &mut peer,

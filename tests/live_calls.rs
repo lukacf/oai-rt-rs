@@ -6,7 +6,7 @@ fn sip_accept_type_is_not_a_primary_or_webrtc_session_field() {
     let accept = AcceptRequest {
         session: SipAcceptSession::new(SessionConfig::default()),
     };
-    let wire = json!({"session":{"type":"live","model":"gpt-live-1"}});
+    let wire = json!({"session":{"type":"live","model":"gpt-live-1.1"}});
     assert_eq!(serde_json::to_value(&accept).unwrap(), wire);
     decode_request::<AcceptRequest>(&wire.to_string())
         .unwrap()

@@ -107,8 +107,36 @@ pub struct InputAudioTranscription {
     pub model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
+    /// Expected input languages for `gpt-live-transcribe` and `gpt-transcribe`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub languages: Option<Vec<String>>,
+    /// Words or phrases that provide transcription context.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keywords: Option<Vec<String>>,
+    /// Latency setting for streaming transcription.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delay: Option<TranscriptionDelay>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TranscriptionDelay {
+    Minimal,
+    Low,
+    Medium,
+    High,
+    Xhigh,
+}
+
+pub(crate) fn warn_if_retiring_transcription(config: Option<&Nullable<InputAudioTranscription>>) {
+    if let Some(model) = config
+        .and_then(Nullable::as_ref)
+        .and_then(|input| input.model.as_deref())
+    {
+        super::common::warn_if_retiring_model(model);
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

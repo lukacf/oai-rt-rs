@@ -1,9 +1,8 @@
 # Public GPT-Live
 
-`oai_rt_rs::live` is the public [OpenAI Live API](https://developers.openai.com/api/reference/resources/live). It is not the Realtime API,
-and it does not use `experimental::gpt_live`, [ChatGPT](https://chatgpt.com) OAuth, private bootstrap
-endpoints, or Alpha/Beta headers. The experimental adapter remains isolated
-behind its existing feature.
+`oai_rt_rs::live` connects to the public Live API using your server-side API key.
+In crate 0.6.0, new sessions default to `gpt-live-1.1`, which improves
+multilingual pronunciation, accent consistency, and transcription. [GPT-Live-1.1 model card](https://developers.openai.com/api/docs/models/gpt-live-1.1)
 
 ## Primary WebSocket
 
@@ -37,10 +36,20 @@ while let Some(frame) = connection.next_event().await? {
 # }
 ```
 
-The primary endpoint is `wss://api.openai.com/v1/live/sessions`, with **no model
-query parameter**. The first command is `session.start`; its `session.model`
-defaults to `gpt-live-1`. The session object has **no `type: "live"` field**.
-`LiveClient::connect` sends this first command and waits for `session.started`.
+The primary endpoint is `wss://api.openai.com/v1/live/sessions`.
+`LiveClient::connect` sends `session.start` with `session.model` in the
+request body, then waits for `session.started`. The same
+`SessionConfig::default()` selects `GPT_LIVE_1_1` for WebRTC creation and SIP
+acceptance. Set `model` to keep using GPT-Live-1 in new sessions.
+
+```rust
+use oai_rt_rs::live::{GPT_LIVE_1, SessionConfig};
+
+let config = SessionConfig {
+    model: GPT_LIVE_1.into(),
+    ..SessionConfig::default()
+};
+```
 
 Use `ClientOptions` for standard organization/project headers and explicit
 timeouts, event-size limits, and queue bounds. API keys stay on trusted servers.
@@ -119,8 +128,33 @@ expect HTTP 200 with an empty body, not JSON. A hangup receipt is not final usag
 `live.call.incoming` bodies. Verify signatures against the **original raw body**
 and deduplicate deliveries in the application before accepting/rejecting.
 `Codec::decode_webhook` is JSON validation, not authentication. SIP header names,
-values, repetition, and order are untrusted metadata. No public outbound-SIP
-creation or recording-deletion endpoint is invented here.
+values, repetition, and order are untrusted metadata. This crate exposes the
+inbound call controls described above. The provider also documents outbound calling.
+[SIP guide](https://developers.openai.com/api/docs/guides/voice-sip?api=live#place-an-outbound-call)
+
+### WebRTC standby
+
+For either Live model, configure a WebRTC call to wait for speech before
+starting inference. A 10-second idle timeout returns the session to standby
+after 10 seconds without an input or output transcript.
+
+```rust
+use oai_rt_rs::live::{SessionConfig, WakePolicy};
+
+let config = SessionConfig {
+    wake_policy: Some(WakePolicy::Speech { vad_threshold: None }),
+    idle_timeout_s: Some(10),
+    ..SessionConfig::default()
+};
+```
+
+Pass this configuration to `LiveClient::create_webrtc`. Keep the microphone
+track active and listen for `ServerEvent::Resumed` on first wake and after
+each pause. `ServerEvent::Paused` indicates that inference has stopped. Both
+events refer to the same connected session. The timeout accepts whole seconds
+from 5 through 60. Omitting it keeps inference active after the first wake.
+The optional speech threshold ranges from 0 to 1 and defaults to 0.5.
+[Managing idle sessions](https://developers.openai.com/api/docs/guides/live-conversations#configure-standby)
 
 ### Audio and captions
 
@@ -296,6 +330,14 @@ provider limit.
 
 ## Delegation
 
+With `gpt-live-1.1`, describe backend capabilities and handoff conditions in
+`SessionConfig::instructions`. For example, "Delegate order status requests
+to the backend. Wait for the verified pickup status before answering." Put
+the lookup procedure in the backend instructions. Prompts written for
+`gpt-live-1` may use the older `<|SpawnThinking|>` marker. Replace that
+marker with plain-language handoff instructions when moving to 1.1.
+[GPT-Live prompting guide](https://developers.openai.com/api/docs/guides/live-prompting#recommended-prompt-structure)
+
 Client delegation emits `session.delegation.created` with an opaque ID, a numeric
 offset, and `target: "client"`. It carries **no task text, arguments, handoff ID,
 or completed user turn**. Build a task from application-owned transcripts/state.
@@ -376,9 +418,9 @@ appropriate user confirmation. The library never executes a tool automatically.
 Images may be sent to a delegated vision-capable backend, not directly to the
 Live audio frontend.
 
-### Observed provider failure during continuation
+### GPT-Live-1 continuation observations
 
-Synthetic native Rust and independent raw Python sessions have intermittently
+In September 2026, synthetic GPT-Live-1 sessions in Rust and Python intermittently
 received `invalid_request_error` / “Responses handoff incomplete” correlated to
 an explicit continuation, **after a new backend response was already reported
 created/in-progress**. The preceding function response was completed and its
@@ -399,10 +441,13 @@ the provider may roll the internal voice engine above 90% usage while keeping th
 **same public session** and up to 8,192 tokens of history. This is not an
 application task restart.
 
-Voice pricing is $0.05/minute, billed per second, including silence/backend waits.
-WebRTC's 15-second initialization is credited against total duration, not added
-to it. Backend usage is separate. The crate reports observations; it does not
-implement billing, quotas, or execution policy.
+GPT-Live-1.1 costs $0.05 per active minute and $0.02 per WebRTC standby minute,
+billed by the second. Active time includes silence and backend waits while
+inference runs. Use `usage.active_seconds` and `usage.paused_seconds` when the
+provider supplies the breakdown. With default WebRTC startup, the provider credits
+the initial 15 seconds against the running session's duration. Backend models
+and tools are billed separately. [Model pricing](https://developers.openai.com/api/docs/models/gpt-live-1.1)
+and [WebRTC initialization charges](https://developers.openai.com/api/docs/guides/voice-latency-cost?api=live#webrtc-initialization-charges).
 
 Storage defaults to false, requires project enablement and a non-ZDR project,
 and retains recordings for 30 days. A fork from a finished stored session creates
@@ -411,11 +456,13 @@ tools. Downloaded content is stereo WAV: input on the left, output on the right.
 
 ## Source contract
 
-The implementation targets the public release announced September 10, 2026,
-verified against official sources September 11, 2026:
+GPT-Live-1.1 and WebRTC standby launched on November 19, 2026. The
+model choice, prompting, and standby updates use the November documentation
+and [OpenAPI revision 373f26a](https://github.com/openai/openai-openapi/blob/373f26a9aec3608e3158f2a0d4b8ae49d13162a4/openapi.json).
 
 - [Changelog](https://developers.openai.com/api/docs/changelog)
-- [GPT-Live 1 model](https://developers.openai.com/api/docs/models/gpt-live-1)
+- [GPT-Live-1.1 model](https://developers.openai.com/api/docs/models/gpt-live-1.1)
+- [GPT-Live-1 model](https://developers.openai.com/api/docs/models/gpt-live-1)
 - [Primary WebSocket schema](https://developers.openai.com/api/reference/resources/live/primary-websocket)
 - [Sideband WebSocket schema](https://developers.openai.com/api/reference/resources/live/sideband-websocket)
 - [Session lifecycle](https://developers.openai.com/api/docs/guides/live-conversations)
@@ -428,10 +475,10 @@ verified against official sources September 11, 2026:
 - [SIP](https://developers.openai.com/api/docs/guides/voice-sip?api=live)
 - [Latency and cost](https://developers.openai.com/api/docs/guides/voice-latency-cost?api=live)
 - [Official documentation MCP / endpoint OpenAPI](https://developers.openai.com/mcp)
-- [Complete pinned OpenAPI](https://raw.githubusercontent.com/openai/openai-openapi/38170fdddbb6a1813eae6c6587ee17cf2987185b/openapi.json)
+- [September 2026 OpenAPI baseline](https://raw.githubusercontent.com/openai/openai-openapi/38170fdddbb6a1813eae6c6587ee17cf2987185b/openapi.json)
 
-The complete spec revision is `38170fdddbb6a1813eae6c6587ee17cf2987185b`
-(September 11, 2026), SHA-256
+The September 11, 2026 qualification used the original public Live model and
+`OpenAPI` revision `38170fdddbb6a1813eae6c6587ee17cf2987185b`, SHA-256
 `3d6223349eadfd937624b9e6b8abf596ec2f680a1a367889cf6a6f924e568127`.
 It resolves components omitted by per-endpoint MCP results. Several rendered
 HTTP reference links were unavailable; relative MCP endpoint paths and the full
@@ -514,17 +561,33 @@ real paced-input/context/decoded-voice/caption exchange. The peer harness
 separately exercises HTTP/RTC fork with source-versus-new and created-versus-
 attached identity assertions.
 
-Carrier-backed SIP acceptance/rejection/transfer was **not live-qualified**:
-no test trunk/webhook fixture was available, and no phone numbers, project
-settings or paid services were provisioned. Its typed contracts and positive/
-negative HTTP behavior are covered deterministically.
+### GPT-Live-1.1 checks
 
-The unchanged legacy opt-in Realtime REST regression returned HTTP 404 for
-`POST /v1/realtime/sessions` (“Invalid URL”), reproduced with the original
-v0.4.1 request and the same configured key. The modern client-secret operation
-preceding it and the existing Realtime WebSocket target checks succeeded. This
-external baseline limitation is not reported as a passing live regression and
-does not change or remove that existing test/API.
+On November 24, 2026, synthetic sessions exercised the public API with the
+new default. Both delegation probes also checked the model in the final snapshot.
+
+| Probe | Observed result | Final usage |
+| --- | --- | --- |
+| Primary WebSocket | Received three context acknowledgments, decoded speech and the expected caption. | 1 second |
+| WebRTC | Negotiated a real media peer, decoded speech and matched the data-channel caption. | 15 seconds |
+| WebRTC standby | Both the sideband and data channel observed two pauses and two speech-triggered resumes. The sideband confirmed the requested close. | 14 active and 3 paused seconds |
+| `live_client_delegation_smoke` | A synthesized order lookup triggered one client delegation. The model acknowledged both scoped updates, returned the pickup caption, and produced 2.1 seconds of voiced audio. | 11 seconds |
+| `live_responses_smoke` | The application completed one function call and requested a continuation. The continuation completed with the expected backend result and spoken caption. | 3 seconds |
+
+The managed probe used its standard workflow. The September observations
+below cover the separate update-during-handoff diagnostic.
+
+### Historical qualification
+
+The original native and peer probes exercised GPT-Live-1 in September 2026.
+The intermittent managed Responses continuation errors described above were
+observed with that model. Carrier-backed SIP acceptance, rejection and transfer
+had deterministic HTTP coverage only.
+
+The September Realtime regression observed HTTP 404 for
+`POST /v1/realtime/sessions`. Its GA client-secret operation and Realtime
+WebSocket handshake checks succeeded. For the model shutdown dates and
+replacement APIs, see the [crate migration guide](https://github.com/lukacf/oai-rt-rs#migrating-older-realtime-voice-models).
 
 Mixed Live/Realtime guides describe both products; only the Live sections apply.
 The private experimental adapter's older names/turn events are not public Live

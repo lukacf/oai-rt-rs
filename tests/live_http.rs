@@ -154,7 +154,7 @@ async fn every_call_control_uses_exact_public_path_body_and_empty_success() {
     }
     assert_eq!(
         serde_json::from_slice::<Value>(&captured[0].body).unwrap(),
-        json!({"session":{"type":"live","model":"gpt-live-1"}})
+        json!({"session":{"type":"live","model":"gpt-live-1.1"}})
     );
     assert_eq!(
         serde_json::from_slice::<Value>(&captured[1].body).unwrap(),
@@ -287,7 +287,7 @@ fn json_reply(status: u16, body: Value) -> Reply {
 #[test]
 fn create_representations_require_only_id_in_the_created_session() {
     let request =
-        json!({"session":{"model":"gpt-live-1"},"transport":{"type":"webrtc","sdp":"v=0\r\n"}});
+        json!({"session":{"model":"gpt-live-1.1"},"transport":{"type":"webrtc","sdp":"v=0\r\n"}});
     assert_eq!(serde_json::to_value(create_request()).unwrap(), request);
     let response =
         json!({"session":{"id":"live_new"},"transport":{"type":"webrtc","sdp":"answer"}});
@@ -339,6 +339,57 @@ async fn webrtc_rejects_manual_audio_format_before_network_io() {
         Err(Error::Invalid(_))
     ));
     assert!(mock.data.captured.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn standby_settings_go_only_to_webrtc_creation() {
+    use oai_rt_rs::live::{AcceptRequest, SipAcceptSession, VadThreshold, WakePolicy};
+
+    let mock = mock(
+        vec![json_reply(
+            201,
+            json!({"session":{"id":"live_new"},"transport":{"type":"webrtc","sdp":"answer"}}),
+        )],
+        4096,
+    )
+    .await;
+    let mut request = create_request();
+    request.session.wake_policy = Some(WakePolicy::Speech {
+        vad_threshold: Some(VadThreshold::try_from(0.7).unwrap()),
+    });
+    request.session.idle_timeout_s = Some(5);
+    mock.client.create_webrtc(&request).await.unwrap();
+
+    assert!(matches!(
+        mock.client.connect(request.session.clone()).await,
+        Err(Error::Invalid(_))
+    ));
+    let sip = AcceptRequest {
+        session: SipAcceptSession::new(request.session.clone()),
+    };
+    assert!(matches!(
+        mock.client.accept_call("live_sip", &sip).await,
+        Err(Error::Invalid(_))
+    ));
+    request.session.idle_timeout_s = Some(61);
+    assert!(matches!(
+        mock.client.create_webrtc(&request).await,
+        Err(Error::Invalid(_))
+    ));
+    let captured = mock.data.captured.lock().unwrap();
+    assert_eq!(captured.len(), 1);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&captured[0].body).unwrap(),
+        json!({
+            "session": {
+                "model": request.session.model,
+                "wake_policy": {"type":"speech","vad_threshold":0.7},
+                "idle_timeout_s": 5
+            },
+            "transport": {"type":"webrtc","sdp":"v=0\r\n"}
+        })
+    );
+    drop(captured);
 }
 
 #[tokio::test]

@@ -8,7 +8,7 @@ Key differences from voice-agent sessions
 -----------------------------------------
 
 *   Connect WebSockets to `/v1/realtime/translations?model=gpt-realtime-translate`.
-*   Connect WebRTC SDP offers to `/v1/realtime/translations` using a
+*   POST WebRTC SDP offers to `/v1/realtime/translations/calls` using a
     translation client secret from `/v1/realtime/translations/client_secrets`.
 *   Configure the target language with `session.audio.output.language`.
 *   Stream source audio continuously with `session.input_audio_buffer.append`.

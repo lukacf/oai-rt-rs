@@ -1,5 +1,5 @@
 use crate::error::ServerError;
-use crate::protocol::models::{ContentPart, Item, Usage};
+use crate::protocol::models::{ContentPart, Item, TranscriptionLanguage, TranscriptionUsage};
 use crate::protocol::server_events::ServerEvent;
 use futures::Stream;
 use std::pin::Pin;
@@ -88,7 +88,8 @@ pub enum SdkEvent {
         item_id: String,
         content_index: u32,
         transcript: String,
-        usage: Option<Usage>,
+        usage: Option<TranscriptionUsage>,
+        languages: Option<Vec<TranscriptionLanguage>>,
     },
     TranslationAudioDelta {
         delta: String,
@@ -357,12 +358,14 @@ fn map_transcription_ref(event: &ServerEvent) -> Option<SdkEvent> {
             content_index,
             transcript,
             usage,
+            languages,
             ..
         } => Some(input_transcription_completed(
             item_id.clone(),
             *content_index,
             transcript.clone(),
             usage.clone(),
+            languages.clone(),
         )),
         _ => None,
     }
@@ -551,13 +554,15 @@ const fn input_transcription_completed(
     item_id: String,
     content_index: u32,
     transcript: String,
-    usage: Option<Usage>,
+    usage: Option<TranscriptionUsage>,
+    languages: Option<Vec<TranscriptionLanguage>>,
 ) -> SdkEvent {
     SdkEvent::InputTranscriptionCompleted {
         item_id,
         content_index,
         transcript,
         usage,
+        languages,
     }
 }
 

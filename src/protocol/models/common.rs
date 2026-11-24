@@ -3,9 +3,51 @@ use serde_json::Value;
 use std::collections::HashMap;
 
 pub const GPT_REALTIME_2: &str = "gpt-realtime-2";
+/// Realtime speech-to-speech model with configurable reasoning effort.
+pub const GPT_REALTIME_2_1: &str = "gpt-realtime-2.1";
+/// Lower-cost Realtime speech-to-speech model.
+pub const GPT_REALTIME_2_1_MINI: &str = "gpt-realtime-2.1-mini";
 pub const GPT_REALTIME_TRANSLATE: &str = "gpt-realtime-translate";
 pub const GPT_REALTIME_WHISPER: &str = "gpt-realtime-whisper";
-pub const DEFAULT_MODEL: &str = GPT_REALTIME_2;
+/// Streaming transcription in a dedicated Realtime transcription session.
+pub const GPT_LIVE_TRANSCRIBE: &str = "gpt-live-transcribe";
+/// Committed-turn transcription over a Realtime WebSocket.
+pub const GPT_TRANSCRIBE: &str = "gpt-transcribe";
+/// Default model for a Realtime conversation. Live sessions use their own default.
+pub const DEFAULT_MODEL: &str = GPT_REALTIME_2_1;
+
+// Exact IDs from the OpenAI deprecation schedule. Custom IDs and active
+// snapshots must pass through without a warning or a model substitution.
+fn model_retirement(model: &str) -> Option<(&'static str, &'static str)> {
+    const TRANSCRIPTION_REPLACEMENTS: &str = "gpt-live-transcribe for dedicated streaming sessions or gpt-transcribe for committed turns";
+    Some(match model {
+        "gpt-realtime" | "gpt-realtime-2025-08-28" | "gpt-4o-realtime" => {
+            ("2027-01-20", GPT_REALTIME_2_1)
+        }
+        "gpt-realtime-mini" | "gpt-realtime-mini-2025-12-15" | "gpt-4o-mini-realtime" => {
+            ("2027-01-20", GPT_REALTIME_2_1_MINI)
+        }
+        "gpt-4o-mini-transcribe-2025-03-20" => ("2027-01-20", TRANSCRIPTION_REPLACEMENTS),
+        "whisper-1"
+        | "gpt-4o-transcribe"
+        | "gpt-4o-transcribe-diarize"
+        | "gpt-4o-mini-transcribe"
+        | "gpt-4o-mini-transcribe-2025-12-15" => ("2027-02-26", TRANSCRIPTION_REPLACEMENTS),
+        _ => return None,
+    })
+}
+
+pub(crate) fn warn_if_retiring_model(model: &str) {
+    let Some((shutdown, replacement)) = model_retirement(model) else {
+        return;
+    };
+    tracing::warn!(
+        model,
+        shutdown,
+        replacement,
+        "OpenAI has scheduled this model for retirement"
+    );
+}
 
 /// Arbitrary JSON payloads allowed by the API (e.g. metadata values).
 pub type Metadata = HashMap<String, Value>;
@@ -285,4 +327,42 @@ impl<'de> Deserialize<'de> for Temperature {
 pub enum PromptRef {
     Id(String),
     Object { id: String },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retirement_schedule_distinguishes_models_and_snapshots() {
+        assert_eq!(
+            model_retirement("gpt-realtime"),
+            Some(("2027-01-20", GPT_REALTIME_2_1))
+        );
+        assert_eq!(
+            model_retirement("gpt-4o-mini-realtime"),
+            Some(("2027-01-20", GPT_REALTIME_2_1_MINI))
+        );
+        for (model, date) in [
+            ("gpt-4o-mini-transcribe-2025-03-20", "2027-01-20"),
+            ("gpt-4o-mini-transcribe-2025-12-15", "2027-02-26"),
+            ("whisper-1", "2027-02-26"),
+        ] {
+            assert_eq!(
+                model_retirement(model).map(|(shutdown, _)| shutdown),
+                Some(date)
+            );
+        }
+        for active in [
+            DEFAULT_MODEL,
+            GPT_REALTIME_2,
+            GPT_REALTIME_WHISPER,
+            GPT_REALTIME_TRANSLATE,
+            GPT_TRANSCRIBE,
+            GPT_LIVE_TRANSCRIBE,
+            "gpt-realtime-custom",
+        ] {
+            assert_eq!(model_retirement(active), None);
+        }
+    }
 }

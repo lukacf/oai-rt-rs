@@ -14,7 +14,7 @@ use axum::{Json, Router};
 use oai_rt_rs::protocol::models::Nullable;
 use oai_rt_rs::transport::rest::RealtimeRestAdapter;
 use oai_rt_rs::{
-    AudioConfig, GPT_REALTIME_2, GPT_REALTIME_TRANSLATE, GPT_REALTIME_WHISPER, InputAudioConfig,
+    AudioConfig, GPT_REALTIME_2_1, GPT_REALTIME_TRANSLATE, GPT_REALTIME_WHISPER, InputAudioConfig,
     InputAudioTranscription, OutputAudioConfig, OutputModalities, ReasoningConfig, ReasoningEffort,
     Result, SessionConfig, SessionKind, Tool, ToolChoice, ToolChoiceMode, Voice,
 };
@@ -224,7 +224,7 @@ fn example_http_error(error: reqwest::Error) -> (StatusCode, String) {
 fn voice_session_config() -> SessionConfig {
     let mut config = SessionConfig::new(
         SessionKind::Realtime,
-        GPT_REALTIME_2,
+        GPT_REALTIME_2_1,
         OutputModalities::Audio,
     );
     config.instructions = Some(
@@ -247,8 +247,7 @@ Do not use preambles for simple direct answers or unclear audio.
         input: Some(InputAudioConfig {
             transcription: Some(Nullable::Value(InputAudioTranscription {
                 model: Some(GPT_REALTIME_WHISPER.to_string()),
-                language: None,
-                prompt: None,
+                ..InputAudioTranscription::default()
             })),
             ..InputAudioConfig::default()
         }),
@@ -428,14 +427,14 @@ mod tests {
         extract_citations, extract_response_text, speech_friendly_text, translation_session_config,
         voice_session_config,
     };
-    use oai_rt_rs::{GPT_REALTIME_2, GPT_REALTIME_TRANSLATE, SessionKind, Tool};
+    use oai_rt_rs::{GPT_REALTIME_2_1, GPT_REALTIME_TRANSLATE, SessionKind, Tool};
     use serde_json::json;
 
     #[test]
     fn voice_config_uses_realtime_tools_and_transcription() {
         let config = voice_session_config();
         assert_eq!(config.kind, SessionKind::Realtime);
-        assert_eq!(config.model, GPT_REALTIME_2);
+        assert_eq!(config.model, GPT_REALTIME_2_1);
         assert!(config.tools.as_ref().is_some_and(|tools| !tools.is_empty()));
         assert!(
             config

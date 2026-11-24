@@ -62,6 +62,7 @@ pub struct SidebandOptions {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionPhase {
     Starting,
+    /// The connection can accept commands, including during WebRTC standby.
     Active,
     Closing,
     Closed,

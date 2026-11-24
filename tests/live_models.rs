@@ -87,6 +87,14 @@ fn named_tool_choices_follow_identifier_patterns_and_payload_debug_is_redacted()
 fn startup_representation_is_separate_from_realtime_and_private_live() {
     assert_eq!(
         serde_json::to_value(SessionConfig::default()).unwrap(),
+        json!({"model":"gpt-live-1.1"})
+    );
+    let pinned = SessionConfig {
+        model: GPT_LIVE_1.into(),
+        ..SessionConfig::default()
+    };
+    assert_eq!(
+        serde_json::to_value(pinned).unwrap(),
         json!({"model":"gpt-live-1"})
     );
     let full = json!({
@@ -126,6 +134,55 @@ fn sparse_update_keeps_absent_null_and_value_distinct() {
 }
 
 #[test]
+fn standby_fields_preserve_omission_and_validate_bounds() {
+    let request = |session: &Value| {
+        decode_request::<CreateRequest>(
+            &json!({"session":session, "transport":{"type":"webrtc","sdp":"offer"}}).to_string(),
+        )
+    };
+    for policy in [
+        json!({"type":"speech"}),
+        json!({"type":"speech","vad_threshold":0.0}),
+        json!({"type":"speech","vad_threshold":1.0}),
+    ] {
+        let session = json!({"model":GPT_LIVE_1_1,"wake_policy":policy});
+        let typed = request(&session).unwrap();
+        typed.validate().unwrap();
+        assert_eq!(serde_json::to_value(&typed.session).unwrap(), session);
+        for timeout in [4, 5, 60, 61] {
+            let mut config = typed.session.clone();
+            config.idle_timeout_s = Some(timeout);
+            assert_eq!(config.validate().is_ok(), (5..=60).contains(&timeout));
+        }
+    }
+    for standby in [
+        json!({"wake_policy":null}),
+        json!({"wake_policy":{}}),
+        json!({"wake_policy":{"type":"sound"}}),
+        json!({"wake_policy":{"type":"speech","vad_threshold":null}}),
+        json!({"wake_policy":{"type":"speech","vad_threshold":1.01}}),
+        json!({"wake_policy":{"type":"speech","vad_threshold":-0.01}}),
+        json!({"idle_timeout_s":null}),
+        json!({"idle_timeout_s":5.5}),
+    ] {
+        let mut session = standby;
+        session["model"] = json!(GPT_LIVE_1_1);
+        assert!(request(&session).is_err(), "{session}");
+    }
+    for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        assert!(VadThreshold::try_from(invalid).is_err());
+    }
+    for command in ["session.start", "session.update"] {
+        let mut session = json!({"wake_policy":{"type":"speech"}});
+        if command == "session.start" {
+            session["model"] = json!(GPT_LIVE_1_1);
+        }
+        let event = json!({"type":command, "session":session});
+        assert!(Codec::default().decode_client(&event.to_string()).is_err());
+    }
+}
+
+#[test]
 fn optional_nonnullable_fields_reject_null() {
     for field in ["audio", "client", "input", "store"] {
         let mut v = json!({"model":"gpt-live-1"});
@@ -147,7 +204,7 @@ fn optional_nonnullable_fields_reject_null() {
 
 #[test]
 fn all_voices_audio_formats_and_backend_options_are_representable() {
-    assert_eq!(VOICES.len(), 22);
+    assert_eq!(VOICES.len(), 38);
     for voice in VOICES {
         let v: Voice = serde_json::from_value(json!(voice)).unwrap();
         assert_eq!(serde_json::to_value(v).unwrap(), json!(voice));

@@ -6,10 +6,10 @@ Learn how to transcribe audio in real-time with the Realtime API.
 Current model
 -------------
 
-For lowest-latency streaming transcription, use `gpt-realtime-whisper` in a
-Realtime transcription session. It is designed for live transcript deltas and
-tunable latency. Request-based file transcription remains a separate Audio API
-use case.
+OpenAI recommends `gpt-live-transcribe` for streaming captions. The SDK's
+transcription builder also supports `gpt-realtime-whisper`, its existing
+default. Select `gpt-transcribe` for WebSocket transcription that starts
+after each committed audio turn. [Realtime transcription guide](https://developers.openai.com/api/docs/guides/realtime-transcription)
 
 You can use the Realtime API for transcription-only use cases, either with input from a microphone or from a file. For example, you can use it to generate subtitles or transcripts in real-time. With the transcription-only mode, the model will not generate responses.
 
@@ -19,16 +19,16 @@ Realtime transcription sessions
 -------------------------------
 
 To use the Realtime API for transcription, create a transcription session over
-WebSockets with `/v1/realtime?intent=transcription` or mint a transcription
-client secret with `/v1/realtime/transcription_sessions` for browser clients.
+WebSockets with `/v1/realtime?intent=transcription` or mint a client secret
+with `POST /v1/realtime/client_secrets` and `session.type = "transcription"`
+for browser clients.
 
 Unlike the regular Realtime API sessions for conversations, the transcription sessions typically don't contain responses from the model.
 
 The transcription session object uses the same base session shape, but it always has a `type` of `"transcription"`:
 
-The SDK high-level transcription builder stores transcription settings in the
-same nested `audio.input` model used by Realtime sessions, then flattens them
-into `transcription_session.update` when opening a transcription WebSocket.
+The SDK sends `session.update` with `session.type = "transcription"` and
+the input settings nested in `session.audio.input`.
 
 ### Session fields
 
@@ -39,8 +39,8 @@ into `transcription_session.update` when opening a transcription WebSocket.
     *   `audio/pcma` (G.711 A-law).
 *   `audio.input.noise_reduction`: Optional noise reduction that runs before VAD and turn detection. Use `{ "type": "near_field" }`, `{ "type": "far_field" }`, or `null` to disable.
 *   `audio.input.transcription`: Optional asynchronous transcription of input audio. Supply:
-    *   `model`: Use `gpt-realtime-whisper` for streaming transcription sessions.
-    *   `language`: ISO-639-1 code such as `en`.
+    *   `model` selects the transcription model.
+    *   `languages` accepts language hints such as `["en", "fr"]` for `gpt-live-transcribe`. Older models may use singular `language`.
     *   `prompt`: Prompt text or keyword list (model-dependent) that guides the transcription output.
 *   `audio.input.turn_detection`: Optional automatic voice activity detection (VAD). Set to `null` to manage turn boundaries manually. For `server_vad`, you can tune `threshold`, `prefix_padding_ms`, `silence_duration_ms`, `interrupt_response`, `create_response`, and `idle_timeout_ms`. For `semantic_vad`, configure `eagerness`, `interrupt_response`, and `create_response`.
 *   `include`: Optional list of additional fields to stream back on events (for example `item.input_audio_transcription.logprobs`).
@@ -91,7 +91,9 @@ You have 2 options:
 Voice activity detection
 ------------------------
 
-The Realtime API supports automatic voice activity detection (VAD). Enabled by default, VAD will control when the input audio buffer is committed, therefore when transcription begins.
+With `gpt-live-transcribe`, omit `audio.input.turn_detection` or set it to
+`null`. The client commits the audio buffer at the end of each turn. Models
+that support server VAD can let the server choose the turn boundaries.
 
 Read more about configuring VAD in our [Voice Activity Detection](/docs/guides/realtime-vad) guide.
 
@@ -110,25 +112,24 @@ Use the `audio.input.noise_reduction` property to configure how to handle noise 
 
 ### Using logprobs
 
-You can use the `include` property to include logprobs in the transcription events, using `item.input_audio_transcription.logprobs`.
-
-Those logprobs can be used to calculate the confidence score of the transcription.
+For models that support token log probabilities, request
+`item.input_audio_transcription.logprobs` through `session.include`.
+`gpt-live-transcribe` does not return confidence scores.
+[Transcription confidence](https://developers.openai.com/api/docs/guides/realtime-transcription#handle-confidence-timestamps-and-speaker-labels)
 
 ```json
 {
-  "type": "transcription_session.update",
-  "input_audio_format": { "type": "audio/pcm", "rate": 24000 },
-  "input_audio_transcription": {
-    "model": "gpt-realtime-whisper",
-    "language": "en"
-  },
-  "turn_detection": {
-    "type": "server_vad",
-    "threshold": 0.5,
-    "prefix_padding_ms": 300,
-    "silence_duration_ms": 500
-  },
-  "include": ["item.input_audio_transcription.logprobs"]
+  "type": "session.update",
+  "session": {
+    "type": "transcription",
+    "audio": {
+      "input": {
+        "format": { "type": "audio/pcm", "rate": 24000 },
+        "transcription": { "model": "gpt-realtime-whisper", "language": "en" }
+      }
+    },
+    "include": ["item.input_audio_transcription.logprobs"]
+  }
 }
 ```
 

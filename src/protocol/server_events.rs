@@ -1,4 +1,7 @@
-use super::models::{ArbitraryJson, ContentPart, Item, Response, Session, Usage};
+use super::models::{
+    ArbitraryJson, ContentPart, Item, Response, Session, TranscriptionLanguage,
+    TranscriptionSession, TranscriptionUsage,
+};
 use crate::error::ServerError;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
@@ -16,6 +19,16 @@ pub enum ServerEvent {
     SessionUpdated {
         event_id: String,
         session: Session,
+    },
+    /// GA `session.created` on a transcription connection.
+    TranscriptionSessionCreated {
+        event_id: String,
+        session: TranscriptionSession,
+    },
+    /// GA `session.updated` on a transcription connection.
+    TranscriptionSessionUpdated {
+        event_id: String,
+        session: TranscriptionSession,
     },
     ConversationItemCreated {
         event_id: String,
@@ -116,7 +129,8 @@ pub enum ServerEvent {
         content_index: u32,
         transcript: String,
         logprobs: Option<Value>,
-        usage: Option<Usage>,
+        usage: Option<TranscriptionUsage>,
+        languages: Option<Vec<TranscriptionLanguage>>,
     },
     McpListToolsInProgress {
         event_id: String,
@@ -286,6 +300,13 @@ pub enum ServerEvent {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(untagged)]
+enum SessionSnapshotRepr {
+    Transcription(Box<TranscriptionSession>),
+    Realtime(Box<Session>),
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "type")]
 enum ServerEventRepr {
     #[serde(rename = "error")]
@@ -294,9 +315,15 @@ enum ServerEventRepr {
         error: ServerError,
     },
     #[serde(rename = "session.created")]
-    SessionCreated { event_id: String, session: Session },
+    SessionCreated {
+        event_id: String,
+        session: SessionSnapshotRepr,
+    },
     #[serde(rename = "session.updated")]
-    SessionUpdated { event_id: String, session: Session },
+    SessionUpdated {
+        event_id: String,
+        session: SessionSnapshotRepr,
+    },
     #[serde(rename = "conversation.item.created")]
     ConversationItemCreated {
         event_id: String,
@@ -404,7 +431,10 @@ enum ServerEventRepr {
         content_index: u32,
         transcript: String,
         logprobs: Option<Value>,
-        usage: Option<Usage>,
+        #[serde(default, deserialize_with = "transcription_usage")]
+        usage: Option<TranscriptionUsage>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        languages: Option<Vec<TranscriptionLanguage>>,
     },
     #[serde(rename = "mcp_list_tools.in_progress")]
     McpListToolsInProgress { event_id: String, item_id: String },
@@ -601,12 +631,26 @@ impl From<ServerEventRepr> for ServerEvent {
     fn from(repr: ServerEventRepr) -> Self {
         match repr {
             ServerEventRepr::Error { event_id, error } => Self::Error { event_id, error },
-            ServerEventRepr::SessionCreated { event_id, session } => {
-                Self::SessionCreated { event_id, session }
-            }
-            ServerEventRepr::SessionUpdated { event_id, session } => {
-                Self::SessionUpdated { event_id, session }
-            }
+            ServerEventRepr::SessionCreated { event_id, session } => match session {
+                SessionSnapshotRepr::Realtime(session) => Self::SessionCreated {
+                    event_id,
+                    session: *session,
+                },
+                SessionSnapshotRepr::Transcription(session) => Self::TranscriptionSessionCreated {
+                    event_id,
+                    session: *session,
+                },
+            },
+            ServerEventRepr::SessionUpdated { event_id, session } => match session {
+                SessionSnapshotRepr::Realtime(session) => Self::SessionUpdated {
+                    event_id,
+                    session: *session,
+                },
+                SessionSnapshotRepr::Transcription(session) => Self::TranscriptionSessionUpdated {
+                    event_id,
+                    session: *session,
+                },
+            },
             ServerEventRepr::ConversationItemCreated {
                 event_id,
                 previous_item_id,
@@ -765,6 +809,7 @@ impl From<ServerEventRepr> for ServerEvent {
                 transcript,
                 logprobs,
                 usage,
+                languages,
             } => Self::InputAudioTranscriptionCompleted {
                 event_id,
                 item_id,
@@ -772,6 +817,7 @@ impl From<ServerEventRepr> for ServerEvent {
                 transcript,
                 logprobs,
                 usage,
+                languages,
             },
             ServerEventRepr::McpListToolsInProgress { event_id, item_id } => {
                 Self::McpListToolsInProgress { event_id, item_id }
@@ -1065,12 +1111,24 @@ impl Serialize for ServerEvent {
                 },
                 Self::SessionCreated { event_id, session } => ServerEventRepr::SessionCreated {
                     event_id: event_id.clone(),
-                    session: session.clone(),
+                    session: SessionSnapshotRepr::Realtime(Box::new(session.clone())),
                 },
                 Self::SessionUpdated { event_id, session } => ServerEventRepr::SessionUpdated {
                     event_id: event_id.clone(),
-                    session: session.clone(),
+                    session: SessionSnapshotRepr::Realtime(Box::new(session.clone())),
                 },
+                Self::TranscriptionSessionCreated { event_id, session } => {
+                    ServerEventRepr::SessionCreated {
+                        event_id: event_id.clone(),
+                        session: SessionSnapshotRepr::Transcription(Box::new(session.clone())),
+                    }
+                }
+                Self::TranscriptionSessionUpdated { event_id, session } => {
+                    ServerEventRepr::SessionUpdated {
+                        event_id: event_id.clone(),
+                        session: SessionSnapshotRepr::Transcription(Box::new(session.clone())),
+                    }
+                }
                 Self::ConversationItemCreated {
                     event_id,
                     previous_item_id,
@@ -1237,6 +1295,7 @@ impl Serialize for ServerEvent {
                     transcript,
                     logprobs,
                     usage,
+                    languages,
                 } => ServerEventRepr::InputAudioTranscriptionCompleted {
                     event_id: event_id.clone(),
                     item_id: item_id.clone(),
@@ -1244,6 +1303,7 @@ impl Serialize for ServerEvent {
                     transcript: transcript.clone(),
                     logprobs: logprobs.clone(),
                     usage: usage.clone(),
+                    languages: languages.clone(),
                 },
                 Self::McpListToolsInProgress { event_id, item_id } => {
                     ServerEventRepr::McpListToolsInProgress {
@@ -1547,6 +1607,23 @@ impl Serialize for ServerEvent {
     }
 }
 
+// Earlier token-based transcription events could omit the billing discriminator.
+fn transcription_usage<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<TranscriptionUsage>, D::Error> {
+    let Some(mut wire) = Option::<Value>::deserialize(deserializer)? else {
+        return Ok(None);
+    };
+    if let Some(fields) = wire.as_object_mut() {
+        fields
+            .entry("type")
+            .or_insert_with(|| Value::from("tokens"));
+    }
+    TranscriptionUsage::deserialize(wire)
+        .map(Some)
+        .map_err(serde::de::Error::custom)
+}
+
 impl<'de> Deserialize<'de> for ServerEvent {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -1582,6 +1659,8 @@ impl ServerEvent {
             Error,
             SessionCreated,
             SessionUpdated,
+            TranscriptionSessionCreated,
+            TranscriptionSessionUpdated,
             ConversationItemCreated,
             ConversationItemAdded,
             ConversationItemDone,

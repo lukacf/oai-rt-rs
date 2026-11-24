@@ -41,7 +41,7 @@ impl AcceptRequest {
     /// # Errors
     /// Rejects invalid config and fields belonging to other primary transports.
     pub fn validate(&self) -> Result<()> {
-        self.session.config.validate()?;
+        self.session.config.validate_without_standby()?;
         if self
             .session
             .config

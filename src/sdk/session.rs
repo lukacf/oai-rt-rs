@@ -1,7 +1,7 @@
 use crate::protocol::client_events::ClientEvent;
 use crate::protocol::models::{
     ContentPart, Item, ItemStatus, ResponseConfig, SessionConfig, SessionUpdate,
-    SessionUpdateConfig, TranscriptionSessionUpdateConfig,
+    SessionUpdateConfig,
 };
 use crate::protocol::server_events::ServerEvent;
 use crate::{Error, Result};
@@ -1099,18 +1099,13 @@ impl SessionConfigSnapshot {
             self.auto_tool_response,
         );
         if self.send_initial_session_update {
-            if self.session.kind == crate::protocol::models::SessionKind::Transcription {
-                let update = transcription_session_update_from_config(&self.session);
-                session
-                    .send_event(ClientEvent::TranscriptionSessionUpdate {
-                        event_id: None,
-                        session: Box::new(update),
-                    })
-                    .await?;
+            let update = if self.session.kind == crate::protocol::models::SessionKind::Transcription
+            {
+                self.session.transcription_update()
             } else {
-                let update = session_update_from_config(&self.session);
-                session.update_session(update).await?;
-            }
+                session_update_from_config(&self.session)
+            };
+            session.update_session(update).await?;
         }
         Ok(session)
     }
@@ -1190,12 +1185,6 @@ fn session_update_from_config(config: &SessionConfig) -> SessionUpdate {
             reasoning: config.reasoning.clone(),
         },
     }
-}
-
-fn transcription_session_update_from_config(
-    config: &SessionConfig,
-) -> TranscriptionSessionUpdateConfig {
-    TranscriptionSessionUpdateConfig::from(config)
 }
 
 struct WsTransport {
@@ -1918,6 +1907,7 @@ mod tests {
             transcript: "hello".to_string(),
             logprobs: None,
             usage: None,
+            languages: None,
         };
         event_tx.send(evt).await.unwrap();
 
@@ -1987,7 +1977,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn transcription_connect_sends_transcription_session_update() {
+    async fn transcription_connect_sends_ga_session_update_with_nested_input() {
         let (_event_tx, event_rx) = mpsc::channel(8);
         let (out_tx, mut out_rx) = mpsc::channel(8);
         let transport = Box::new(MockTransport {
@@ -2008,7 +1998,7 @@ mod tests {
                     crate::protocol::models::InputAudioTranscription {
                         model: Some(crate::protocol::models::GPT_REALTIME_WHISPER.to_string()),
                         language: Some("en".to_string()),
-                        prompt: None,
+                        ..crate::InputAudioTranscription::default()
                     },
                 )),
                 noise_reduction: None,
@@ -2038,19 +2028,16 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        match sent {
-            ClientEvent::TranscriptionSessionUpdate { session, .. } => {
-                assert_eq!(
-                    session
-                        .input_audio_transcription
-                        .as_ref()
-                        .and_then(crate::protocol::models::Nullable::as_ref)
-                        .and_then(|transcription| transcription.model.as_deref()),
-                    Some(crate::protocol::models::GPT_REALTIME_WHISPER)
-                );
-            }
-            other => panic!("unexpected initial event: {other:?}"),
-        }
+        assert_eq!(
+            serde_json::to_value(sent).unwrap(),
+            serde_json::json!({
+                "type": "session.update",
+                "session": {"type": "transcription", "audio": {"input": {
+                    "format": {"type": "audio/pcm", "rate": 24000},
+                    "transcription": {"model": "gpt-realtime-whisper", "language": "en"}
+                }}}
+            })
+        );
     }
 
     #[tokio::test]

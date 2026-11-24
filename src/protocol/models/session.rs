@@ -113,6 +113,27 @@ pub struct SessionConfig {
 }
 
 impl SessionConfig {
+    pub(crate) fn warn_if_retiring_models(&self) {
+        let nested = self
+            .audio
+            .as_ref()
+            .and_then(|audio| audio.input.as_ref())
+            .and_then(|input| input.transcription.as_ref());
+        let transcription = nested.or(self.input_audio_transcription.as_ref());
+        if self.kind == SessionKind::Transcription {
+            if !matches!(transcription, Some(Nullable::Null)) {
+                let model = transcription
+                    .and_then(Nullable::as_ref)
+                    .and_then(|config| config.model.as_deref())
+                    .unwrap_or(&self.model);
+                super::common::warn_if_retiring_model(model);
+            }
+        } else {
+            super::common::warn_if_retiring_model(&self.model);
+            super::audio::warn_if_retiring_transcription(transcription);
+        }
+    }
+
     #[must_use]
     pub fn new(
         kind: SessionKind,
@@ -140,6 +161,38 @@ impl SessionConfig {
             tracing: None,
             voice: None,
             reasoning: None,
+        }
+    }
+
+    // Both GA client secrets and session.update use the same input-only shape.
+    pub(crate) fn transcription_update(&self) -> SessionUpdate {
+        let mut input = self
+            .audio
+            .as_ref()
+            .and_then(|audio| audio.input.clone())
+            .unwrap_or_default();
+        input.format = input.format.or_else(|| self.input_audio_format.clone());
+        input.turn_detection = input.turn_detection.or_else(|| self.turn_detection.clone());
+        let transcription = input.transcription.get_or_insert_with(|| {
+            self.input_audio_transcription
+                .clone()
+                .unwrap_or_else(|| Nullable::Value(InputAudioTranscription::default()))
+        });
+        if let Nullable::Value(transcription) = transcription {
+            transcription
+                .model
+                .get_or_insert_with(|| self.model.clone());
+        }
+        SessionUpdate {
+            config: SessionUpdateConfig {
+                kind: Some(SessionKind::Transcription),
+                audio: Some(AudioConfig {
+                    input: Some(input),
+                    output: None,
+                }),
+                include: self.include.clone(),
+                ..SessionUpdateConfig::default()
+            },
         }
     }
 }
@@ -197,6 +250,27 @@ pub struct Session {
     pub config: SessionConfig,
 }
 
+/// Input-only session snapshot returned by GA transcription events and client secrets.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TranscriptionSession {
+    pub id: String,
+    pub object: String,
+    #[serde(rename = "type")]
+    kind: TranscriptionKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audio: Option<AudioConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub include: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+enum TranscriptionKind {
+    #[serde(rename = "transcription")]
+    Transcription,
+}
+
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct SessionUpdate {
     /// Flattened to match the API's session.update JSON shape.
@@ -204,6 +278,8 @@ pub struct SessionUpdate {
     pub config: SessionUpdateConfig,
 }
 
+/// Flat payload for the legacy `transcription_session.update` event.
+/// Use [`SessionUpdate`] with [`SessionKind::Transcription`] for GA.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TranscriptionSessionUpdateConfig {
     #[serde(skip_serializing_if = "Option::is_none")]

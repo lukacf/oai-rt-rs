@@ -158,6 +158,15 @@ impl RealtimeBuilder {
         self
     }
 
+    /// Configure model-specific transcription fields, including languages, keywords and delay.
+    #[must_use]
+    pub fn transcription_config(mut self, config: InputAudioTranscription) -> Self {
+        let audio = self.audio.get_or_insert_with(AudioConfig::default);
+        let input = audio.input.get_or_insert_with(InputAudioConfig::default);
+        input.transcription = Some(crate::protocol::models::Nullable::Value(config));
+        self
+    }
+
     #[must_use]
     pub fn transcription_model(mut self, model: impl Into<String>) -> Self {
         let audio = self.audio.get_or_insert_with(AudioConfig::default);
@@ -521,16 +530,15 @@ impl RealtimeBuilder {
             match &mut input.transcription {
                 Some(crate::protocol::models::Nullable::Value(transcription)) => {
                     if transcription.model.is_none() {
-                        transcription.model = Some(GPT_REALTIME_WHISPER.to_string());
+                        transcription.model = Some(session.model.clone());
                     }
                 }
                 Some(crate::protocol::models::Nullable::Null) => {}
                 None => {
                     input.transcription = Some(crate::protocol::models::Nullable::Value(
                         InputAudioTranscription {
-                            model: Some(GPT_REALTIME_WHISPER.to_string()),
-                            language: None,
-                            prompt: None,
+                            model: Some(session.model.clone()),
+                            ..InputAudioTranscription::default()
                         },
                     ));
                 }
@@ -694,8 +702,7 @@ impl VoiceSessionBuilder {
     pub fn transcription(mut self, model: impl Into<String>) -> Self {
         let transcription = InputAudioTranscription {
             model: Some(model.into()),
-            language: None,
-            prompt: None,
+            ..InputAudioTranscription::default()
         };
         if let Some(audio) = self.inner.audio.as_mut() {
             if let Some(input) = audio.input.as_mut() {
@@ -943,6 +950,36 @@ mod tests {
         assert_eq!(
             snapshot.session.include.as_deref(),
             Some(&["item.input_audio_transcription.logprobs".to_string()][..])
+        );
+    }
+
+    #[test]
+    fn streaming_transcription_options_reach_the_ga_update() {
+        use crate::{GPT_LIVE_TRANSCRIBE, TranscriptionDelay};
+
+        let snapshot = Realtime::transcription_builder()
+            .api_key("test-key")
+            .transcription_config(InputAudioTranscription {
+                model: Some(GPT_LIVE_TRANSCRIBE.into()),
+                languages: Some(vec!["en".into(), "fr".into()]),
+                keywords: Some(vec!["pickup".into()]),
+                delay: Some(TranscriptionDelay::Low),
+                ..InputAudioTranscription::default()
+            })
+            .transcription_prompt("Store pickup")
+            .manual_turn_detection()
+            .build()
+            .unwrap();
+        let wire = serde_json::to_value(snapshot.session.transcription_update()).unwrap();
+        assert_eq!(
+            wire,
+            serde_json::json!({
+                "type":"transcription",
+                "audio":{"input":{"transcription":{
+                    "model":"gpt-live-transcribe","languages":["en","fr"],"keywords":["pickup"],
+                    "delay":"low","prompt":"Store pickup"
+                },"turn_detection":null}}
+            })
         );
     }
 
